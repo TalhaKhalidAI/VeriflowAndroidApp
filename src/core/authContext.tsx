@@ -151,6 +151,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       );
     }
 
+    if (perm === 'user.delete_all_data' || perm === 'delete_all_data') {
+      return (
+        session.permissions?.['user.delete_all_data'] === true ||
+        session.permissions?.['delete_all_data'] === true
+      );
+    }
+
     return false;
   };
 

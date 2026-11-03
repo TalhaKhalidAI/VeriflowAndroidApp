@@ -18,12 +18,13 @@ import {
   ShieldCheck,
   CheckCircle,
   Database,
+  Trash2,
 } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
-import { Image, StyleSheet } from 'react-native';
+import { Alert, Image, StyleSheet } from 'react-native';
 import { CheckoutModal } from '../components/CheckoutModal';
 import { useAuth } from '../core/authContext';
-import { getInventoryItems, getPendingScans } from '../core/db';
+import { deleteAllSqliteData, getInventoryItems, getPendingScans } from '../core/db';
 
 const BLACK = '#07111d';
 const PANEL = '#0f172a';
@@ -40,11 +41,42 @@ export default function HomePage() {
 
   const canScan = hasPermission('scans.create');
   const canViewHistory = hasPermission('scans.view');
+  const canDeleteAllData = hasPermission('user.delete_all_data');
 
-  useEffect(() => {
+  const refreshCounts = () => {
     void getPendingScans().then(s => setPendingScansCount(s.length));
     void getInventoryItems().then(r => setRulesCount(r.length));
+  };
+
+  useEffect(() => {
+    refreshCounts();
   }, []);
+
+  const handleDeleteAllSqlite = () => {
+    if (!canDeleteAllData) {
+      Alert.alert('Permission Denied', 'Requires "user.delete_all_data" permission.');
+      return;
+    }
+    Alert.alert(
+      'Delete All Local SQLite Data?',
+      'This will wipe all scans, inventory rules, and public keys stored locally in SQLite on this device.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete All Data',
+          style: 'destructive',
+          onPress: async () => {
+            const res = await deleteAllSqliteData();
+            refreshCounts();
+            Alert.alert(
+              'All SQLite Data Deleted',
+              `Deleted ${res.deletedScans} scan(s), ${res.deletedRules} rule(s), and ${res.deletedKeys} key(s) from SQLite.`,
+            );
+          },
+        },
+      ],
+    );
+  };
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: BLACK }}>
@@ -124,6 +156,12 @@ export default function HomePage() {
                     scans.delete ({hasPermission('scans.delete') ? 'Yes' : 'No'})
                   </Text>
                 </HStack>
+                <HStack space="xs" alignItems="center">
+                  <CheckCircle size={12} color={canDeleteAllData ? PASS_COLOR : '#64748b'} />
+                  <Text color={canDeleteAllData ? '#f8fafc' : '#64748b'} fontSize="$xs">
+                    user.delete_all_data ({canDeleteAllData ? 'Yes' : 'No'})
+                  </Text>
+                </HStack>
               </HStack>
             </Box>
           </Box>
@@ -199,6 +237,23 @@ export default function HomePage() {
                 </ButtonText>
               </HStack>
             </Button>
+
+            {canDeleteAllData ? (
+              <Button
+                size="lg"
+                variant="outline"
+                borderColor="#ef4444"
+                borderRadius="$lg"
+                onPress={handleDeleteAllSqlite}
+              >
+                <HStack space="sm" alignItems="center">
+                  <Trash2 size={20} color="#ef4444" />
+                  <ButtonText color="#ef4444" fontWeight="800">
+                    Delete All SQLite Data
+                  </ButtonText>
+                </HStack>
+              </Button>
+            ) : null}
 
             {/* Checkout Action Button */}
             <Button

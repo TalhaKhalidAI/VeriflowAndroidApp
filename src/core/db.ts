@@ -473,6 +473,52 @@ export function updateScanStatus(id: number, status: 'pass' | 'fail'): Promise<v
   return Promise.resolve();
 }
 
+// ---------------- WIPE ALL LOCAL SQLITE DATA ----------------
+export function deleteAllSqliteData(): Promise<{
+  deletedScans: number;
+  deletedRules: number;
+  deletedKeys: number;
+}> {
+  if (!db) {
+    const deletedScans = memoryStore.scans.length;
+    const deletedRules = memoryStore.inventory.length;
+    const deletedKeys = memoryStore.publicKeys.length;
+    memoryStore.scans = [];
+    memoryStore.inventory = [];
+    memoryStore.publicKeys = [];
+    return Promise.resolve({ deletedScans, deletedRules, deletedKeys });
+  }
+
+  let deletedScans = 0;
+  let deletedRules = 0;
+  let deletedKeys = 0;
+
+  db.withTransactionSync(() => {
+    try {
+      const scanRow = dbAny.getFirstSync('SELECT COUNT(*) as cnt FROM scans_queue');
+      deletedScans = Number(scanRow?.cnt ?? 0);
+    } catch {}
+    try {
+      const ruleRow = dbAny.getFirstSync('SELECT COUNT(*) as cnt FROM inventory_ids');
+      deletedRules = Number(ruleRow?.cnt ?? 0);
+    } catch {}
+    try {
+      const keyRow = dbAny.getFirstSync('SELECT COUNT(*) as cnt FROM public_keys');
+      deletedKeys = Number(keyRow?.cnt ?? 0);
+    } catch {}
+
+    db.runSync('DELETE FROM scans_queue');
+    db.runSync('DELETE FROM inventory_ids');
+    db.runSync('DELETE FROM public_keys');
+  });
+
+  memoryStore.scans = [];
+  memoryStore.inventory = [];
+  memoryStore.publicKeys = [];
+
+  return Promise.resolve({ deletedScans, deletedRules, deletedKeys });
+}
+
 // ---------------- APP SETTINGS ----------------
 export function getAppSetting(key: string, defaultValue: string = ''): Promise<string> {
   if (!db) {

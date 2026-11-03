@@ -28,6 +28,7 @@ import { useAuth } from '../core/authContext';
 import {
   addInventoryItem,
   addPublicKey,
+  deleteAllSqliteData,
   deleteInventoryItem,
   deletePublicKey,
   getInventoryItems,
@@ -47,7 +48,7 @@ const PASS_COLOR = '#22c55e';
 const FAIL_COLOR = '#ef4444';
 
 export default function SettingsPage() {
-  const { session, hasPermission, apiBaseUrl, setApiBaseUrl } = useAuth();
+  const { session, hasPermission, refreshPermissions, apiBaseUrl, setApiBaseUrl } = useAuth();
 
   // Tab: 'KEYS' | 'RULES' | 'NETWORK'
   const [activeTab, setActiveTab] = useState<'KEYS' | 'RULES' | 'NETWORK'>('RULES');
@@ -62,6 +63,7 @@ export default function SettingsPage() {
   const canCreateKeys = hasPermission('keys.create');
   const canUpdateKeys = hasPermission('keys.update');
   const canDeleteKeys = hasPermission('keys.delete') || hasPermission('keys.revoke');
+  const canDeleteAllData = hasPermission('user.delete_all_data');
 
   // Public Keys state
   const [publicKeys, setPublicKeys] = useState<PublicKeyRecord[]>([]);
@@ -258,6 +260,43 @@ ${k.x5c[0]}
         },
       },
     ]);
+  };
+
+  // ---------------- WIPE ALL SQLITE DATA ACTION ----------------
+  const confirmDeleteAllData = () => {
+    if (!canDeleteAllData) {
+      Alert.alert(
+        'Permission Denied',
+        'Your user account lacks "user.delete_all_data" permission. Ask an admin to grant it and tap Sync Permissions.',
+      );
+      return;
+    }
+
+    Alert.alert(
+      'Delete All Local SQLite Data?',
+      'This will permanently wipe all local scans, inventory rules, and public keys stored in SQLite on this Android device. Your active login session and server URL will remain intact.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete All Data',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const res = await deleteAllSqliteData();
+              setPublicKeys([]);
+              setRules([]);
+              await refresh();
+              Alert.alert(
+                'All SQLite Data Deleted',
+                `Wiped ${res.deletedScans} scan(s), ${res.deletedRules} rule(s), and ${res.deletedKeys} key(s) from local SQLite database.`,
+              );
+            } catch (err: any) {
+              Alert.alert('Delete Failed', err.message || 'Could not clear local SQLite database.');
+            }
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -723,6 +762,88 @@ ${k.x5c[0]}
               </Button>
             </Box>
           ) : null}
+
+          {/* ======================================================== */}
+          {/* DANGER ZONE: DELETE ALL LOCAL SQLITE DATA */}
+          {/* ======================================================== */}
+          <Box
+            borderWidth={2}
+            borderColor={canDeleteAllData ? FAIL_COLOR : '#334155'}
+            borderRadius="$xl"
+            bg={PANEL}
+            p="$4"
+          >
+            <HStack justifyContent="space-between" alignItems="center" mb="$1">
+              <HStack space="xs" alignItems="center">
+                <Trash2 size={18} color={canDeleteAllData ? FAIL_COLOR : MUTED} />
+                <Text color="#f8fafc" fontSize="$md" fontWeight="800">
+                  Local SQLite Data Reset
+                </Text>
+              </HStack>
+              <Box
+                bg={canDeleteAllData ? 'rgba(239, 68, 68, 0.2)' : 'rgba(148, 163, 184, 0.12)'}
+                px="$2"
+                py="$1"
+                borderRadius="$sm"
+                borderWidth={1}
+                borderColor={canDeleteAllData ? FAIL_COLOR : '#475569'}
+              >
+                <Text
+                  color={canDeleteAllData ? '#f87171' : MUTED}
+                  fontSize="$2xs"
+                  fontWeight="900"
+                >
+                  {canDeleteAllData ? 'user.delete_all_data: GRANTED' : 'user.delete_all_data: DENIED'}
+                </Text>
+              </Box>
+            </HStack>
+
+            <Text color={MUTED} fontSize="$xs" mb="$3">
+              Permanently wipe all local SQLite tables (scan queue, inventory rules, and cached public keys) from this device.
+            </Text>
+
+            {canDeleteAllData ? (
+              <Button
+                bg={FAIL_COLOR}
+                borderRadius="$md"
+                onPress={confirmDeleteAllData}
+              >
+                <HStack space="xs" alignItems="center">
+                  <Trash2 size={16} color="#ffffff" />
+                  <ButtonText color="#ffffff" fontWeight="900">
+                    Delete All SQLite Data
+                  </ButtonText>
+                </HStack>
+              </Button>
+            ) : (
+              <HStack space="xs" alignItems="center" justifyContent="space-between">
+                <HStack space="xs" alignItems="center" flex={1}>
+                  <Lock size={14} color={MUTED} />
+                  <Text color={MUTED} fontSize="$xs">
+                    Requires &quot;user.delete_all_data&quot; permission.
+                  </Text>
+                </HStack>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  borderColor={YELLOW}
+                  onPress={async () => {
+                    const ok = await refreshPermissions();
+                    Alert.alert(
+                      ok ? 'Permissions Synced' : 'Sync Unavailable',
+                      ok
+                        ? 'Updated user permissions from server.'
+                        : 'Could not reach server. Using current token permissions.',
+                    );
+                  }}
+                >
+                  <ButtonText color={YELLOW} fontSize="$2xs" fontWeight="800">
+                    Sync Permissions
+                  </ButtonText>
+                </Button>
+              </HStack>
+            )}
+          </Box>
         </VStack>
       </Box>
 

@@ -26,7 +26,7 @@ import {
 import React, { useEffect, useState, useMemo } from 'react';
 import { ActivityIndicator, Alert, Modal, StyleSheet, View, Clipboard } from 'react-native';
 import { useAuth } from '../core/authContext';
-import { deleteScan, getAllScans, updateScanStatus } from '../core/db';
+import { deleteAllSqliteData, deleteScan, getAllScans, updateScanStatus } from '../core/db';
 import { extractJwtHeader, extractJwtPayload } from '../core/jwt';
 import { ScanRecord } from '../core/types';
 
@@ -52,6 +52,7 @@ export default function HistoryPage() {
   const canView = canViewAny || canViewOwn;
   const canUpdate = hasPermission('scans.update');
   const canDelete = hasPermission('scans.delete');
+  const canDeleteAllData = hasPermission('user.delete_all_data');
 
   const loadData = async () => {
     if (!canView) return;
@@ -118,6 +119,35 @@ export default function HistoryPage() {
           onPress: async () => {
             await deleteScan(item.id);
             await loadData();
+          },
+        },
+      ],
+    );
+  };
+
+  const handleDeleteAllData = () => {
+    if (!canDeleteAllData) {
+      Alert.alert(
+        'Permission Denied',
+        'Your user account lacks "user.delete_all_data" permission. Tap "Sync from Server" above if an admin recently updated your role.',
+      );
+      return;
+    }
+    Alert.alert(
+      'Delete All SQLite Data?',
+      'This will permanently delete all local scans, inventory rules, and public keys stored in SQLite on this device.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete All Data',
+          style: 'destructive',
+          onPress: async () => {
+            const res = await deleteAllSqliteData();
+            await loadData();
+            Alert.alert(
+              'All SQLite Data Deleted',
+              `Removed ${res.deletedScans} scan(s), ${res.deletedRules} rule(s), and ${res.deletedKeys} key(s) from SQLite.`,
+            );
           },
         },
       ],
@@ -238,7 +268,27 @@ export default function HistoryPage() {
               <Text color={canDelete ? PASS_COLOR : FAIL_COLOR} fontSize="$xs" fontWeight="700">
                 • scans.delete: {canDelete ? 'GRANTED' : 'DENIED'}
               </Text>
+              <Text color={canDeleteAllData ? PASS_COLOR : FAIL_COLOR} fontSize="$xs" fontWeight="700">
+                • user.delete_all_data: {canDeleteAllData ? 'GRANTED' : 'DENIED'}
+              </Text>
             </HStack>
+
+            {canDeleteAllData ? (
+              <Button
+                size="xs"
+                bg={FAIL_COLOR}
+                borderRadius="$md"
+                mt="$3"
+                onPress={handleDeleteAllData}
+              >
+                <HStack space="xs" alignItems="center">
+                  <Trash2 size={14} color="#ffffff" />
+                  <ButtonText color="#ffffff" fontSize="$xs" fontWeight="900">
+                    Delete All SQLite Data
+                  </ButtonText>
+                </HStack>
+              </Button>
+            ) : null}
           </Box>
 
           {/* Scan Items List */}
