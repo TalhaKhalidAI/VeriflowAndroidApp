@@ -25,10 +25,13 @@ import {
   UploadCloud,
   Flashlight,
   FlashlightOff,
+  QrCode,
 } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Modal, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { useAuth } from '../core/authContext';
+import { RootCaModal } from '../components/RootCaModal';
+import { PublicKeyModal } from '../components/PublicKeyModal';
 import {
   addPublicKey,
   getPublicKeys,
@@ -37,7 +40,15 @@ import {
   getPendingScans,
   markScansAsSynced,
 } from '../core/db';
-import { normalizePublicKey, verifyJwtAgainstPublicKey } from '../core/jwt';
+import {
+  buildApiUrl,
+  isLikelyPublicKeyPayload,
+  normalizeApiBaseUrl,
+  normalizePublicKey,
+  parsePublicKeyPayload,
+  parseRootCaPayload,
+  verifyJwtAgainstPublicKey,
+} from '../core/jwt';
 import { PublicKeyRecord } from '../core/types';
 
 const BLACK = '#07111d';
@@ -49,7 +60,7 @@ const FAIL_COLOR = '#ef4444';
 const PASS_COLOR = '#22c55e';
 
 export default function LoginPage() {
-  const { login, apiBaseUrl, setApiBaseUrl } = useAuth();
+  const { login, apiBaseUrl, setApiBaseUrl, rootCaCert, setRootCaCert } = useAuth();
   const [permission, requestPermission] = useCameraPermissions();
   const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
   const { width, height } = useWindowDimensions();
@@ -91,13 +102,29 @@ export default function LoginPage() {
   // Modals
   const [keyPickerVisible, setKeyPickerVisible] = useState(false);
   const [addKeyModalVisible, setAddKeyModalVisible] = useState(false);
+  const [addKeyQrMode, setAddKeyQrMode] = useState(false);
+  const [addKeyScanLock, setAddKeyScanLock] = useState(false);
   const [serverModalVisible, setServerModalVisible] = useState(false);
+  const [rootCaQrMode, setRootCaQrMode] = useState(false);
+  const [rootCaScanLock, setRootCaScanLock] = useState(false);
+  const [rootCaModalVisible, setRootCaModalVisible] = useState(false);
 
   // Form states
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeyPem, setNewKeyPem] = useState('');
+  const [scannedKeyFormat, setScannedKeyFormat] = useState<string | null>(null);
   const [serverUrlInput, setServerUrlInput] = useState(apiBaseUrl);
+  const [rootCaInput, setRootCaInput] = useState(rootCaCert);
+  const [scannedCaFormat, setScannedCaFormat] = useState<string | null>(null);
   const [isFetchingServerKeys, setIsFetchingServerKeys] = useState(false);
+
+  useEffect(() => {
+    setServerUrlInput(apiBaseUrl);
+  }, [apiBaseUrl]);
+
+  useEffect(() => {
+    setRootCaInput(rootCaCert);
+  }, [rootCaCert]);
 
   const selectedKey = publicKeys.find(k => k.id === selectedKeyId) || publicKeys[0] || null;
 
@@ -117,8 +144,9 @@ export default function LoginPage() {
 
   const handleFetchServerKeys = async (silent: boolean = false): Promise<PublicKeyRecord[]> => {
     setIsFetchingServerKeys(true);
+    const targetJwksUrl = buildApiUrl(apiBaseUrl, '/keys/jwks');
     try {
-      const res = await fetch(`${apiBaseUrl}/app/v1/keys/jwks`, {
+      const res = await fetch(targetJwksUrl, {
         headers: { Accept: 'application/json' },
       }).catch(() => null);
 
@@ -159,7 +187,7 @@ ${k.x5c[0]}
         if (!silent) {
           Alert.alert(
             'Connection Failed',
-            `Could not reach ${apiBaseUrl}/app/v1/keys/jwks. Please check network or API URL.`,
+            `Could not reach ${targetJwksUrl}. Please check network or API URL.`,
           );
         }
       }
@@ -191,6 +219,21 @@ ${k.x5c[0]}
     setIsVerifying(true);
     try {
       const token = data.trim();
+
+      // Auto-detect if the operator scanned a Public Key QR (JSON / Clean Base64 / PEM) directly on the Check-In screen
+      if (isLikelyPublicKeyPayload(token)) {
+        const parsed = parsePublicKeyPayload(token, newKeyName);
+        setNewKeyPem(parsed.pem);
+        if (!newKeyName.trim() || parsed.detectedFormat === 'JSON Bundle') {
+          setNewKeyName(parsed.suggestedName);
+        }
+        setScannedKeyFormat(parsed.detectedFormat);
+        setAddKeyQrMode(false);
+        setAddKeyModalVisible(true);
+        setIsVerifying(false);
+        return;
+      }
+
       let keyToUse = selectedKey;
       let result = keyToUse
         ? await verifyJwtAgainstPublicKey(token, keyToUse.public_key_string)
@@ -283,10 +326,11 @@ ${k.x5c[0]}
       let hasActiveServerShift = false;
       let isServerCompleted = false;
       let isOffline = false;
+      let isTokenRejectedByServer = false;
 
       try {
         // Step 1: Check if the user currently has an open active shift on the server
-        const activeMeRes = await fetch(`${apiBaseUrl}/app/v1/shifts/active/me`, {
+        const activeMeRes = await fetch(buildApiUrl(apiBaseUrl, '/shifts/active/me'), {
           headers: { Authorization: `Bearer ${token}` },
         }).catch(() => null);
 
@@ -296,13 +340,15 @@ ${k.x5c[0]}
             effectiveShiftId = activeMeData.id;
             hasActiveServerShift = true;
           }
+        } else if (activeMeRes && activeMeRes.status === 401) {
+          isTokenRejectedByServer = true;
         } else if (!activeMeRes) {
           isOffline = true;
         }
 
         // Step 2: If active/me didn't return an active shift, check the specific shift_id from badge QR
-        if (!hasActiveServerShift && !isOffline) {
-          const shiftStatusRes = await fetch(`${apiBaseUrl}/app/v1/shifts/${payload.shift_id}`, {
+        if (!hasActiveServerShift && !isOffline && !isTokenRejectedByServer) {
+          const shiftStatusRes = await fetch(buildApiUrl(apiBaseUrl, `/shifts/${payload.shift_id}`), {
             headers: { Authorization: `Bearer ${token}` },
           }).catch(() => null);
 
@@ -311,6 +357,8 @@ ${k.x5c[0]}
             if (shiftData.status === 'completed' || shiftData.status === 'revoked') {
               isServerCompleted = true;
             }
+          } else if (shiftStatusRes && shiftStatusRes.status === 401) {
+            isTokenRejectedByServer = true;
           } else if (!shiftStatusRes) {
             isOffline = true;
           }
@@ -318,6 +366,14 @@ ${k.x5c[0]}
       } catch (e) {
         console.warn('Server shift status check deferred (offline):', e);
         isOffline = true;
+      }
+
+      if (isTokenRejectedByServer) {
+        setIsVerifying(false);
+        setErrorMessage(
+          'Shift Token Rejected: Server reported "Invalid token". This badge was signed with an older/different key or has expired. Please generate a new active shift badge from the Web Console.',
+        );
+        return;
       }
 
       // If user has NO active shift on server AND the scanned badge shift is completed/revoked:
@@ -415,7 +471,7 @@ ${k.x5c[0]}
           };
         });
 
-        const syncUrl = `${apiBaseUrl}/app/v1/scans/shifts/${prompt.shiftId}/sync`;
+        const syncUrl = buildApiUrl(apiBaseUrl, `/scans/shifts/${prompt.shiftId}/sync`);
         const syncRes = await fetch(syncUrl, {
           method: 'POST',
           headers: {
@@ -432,7 +488,7 @@ ${k.x5c[0]}
       }
 
       // 2. Checkout shift on API
-      const checkoutUrl = `${apiBaseUrl}/app/v1/shifts/${prompt.shiftId}/checkout`;
+      const checkoutUrl = buildApiUrl(apiBaseUrl, `/shifts/${prompt.shiftId}/checkout`);
       let checkoutRes = await fetch(checkoutUrl, {
         method: 'POST',
         headers: {
@@ -441,7 +497,7 @@ ${k.x5c[0]}
       }).catch(() => null);
 
       if (!checkoutRes || !checkoutRes.ok) {
-        checkoutRes = await fetch(`${apiBaseUrl}/app/v1/shifts/checkout`, {
+        checkoutRes = await fetch(buildApiUrl(apiBaseUrl, '/shifts/checkout'), {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${prompt.token}`,
@@ -471,7 +527,7 @@ ${k.x5c[0]}
     setIsStartingNewShift(true);
     setErrorMessage(null);
     try {
-      const startRes = await fetch(`${apiBaseUrl}/app/v1/shifts/start`, {
+      const startRes = await fetch(buildApiUrl(apiBaseUrl, '/shifts/start'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -487,7 +543,7 @@ ${k.x5c[0]}
         if (startRes.status === 409) {
           // 409 Conflict: Worker already has an active shift on server!
           // Fetch their active shift via /active/me
-          const activeMeRes = await fetch(`${apiBaseUrl}/app/v1/shifts/active/me`, {
+          const activeMeRes = await fetch(buildApiUrl(apiBaseUrl, '/shifts/active/me'), {
             headers: { Authorization: `Bearer ${completedShiftPrompt.token}` },
           }).catch(() => null);
 
@@ -550,22 +606,85 @@ ${k.x5c[0]}
   };
 
   const handleSaveManualKey = async () => {
-    if (!newKeyName.trim() || !newKeyPem.trim()) {
-      Alert.alert('Missing fields', 'Please enter a key name and PEM block.');
+    if (!newKeyName.trim()) {
+      Alert.alert('Key Alias Required', 'Please enter a Key Alias (name) before saving the key.');
+      return;
+    }
+    if (!newKeyPem.trim()) {
+      Alert.alert('Missing Key Certificate', 'Please paste or scan a Public Key (JSON, Base64, or PEM).');
       return;
     }
     try {
-      const normalized = normalizePublicKey(newKeyPem);
-      const insertedId = await addPublicKey(newKeyName.trim(), normalized);
+      const parsed = parsePublicKeyPayload(newKeyPem, newKeyName.trim());
+      const insertedId = await addPublicKey(newKeyName.trim(), parsed.pem);
       await loadKeys();
       setSelectedKeyId(insertedId);
       setNewKeyName('');
       setNewKeyPem('');
+      setScannedKeyFormat(null);
+      setAddKeyQrMode(false);
       setAddKeyModalVisible(false);
-      Alert.alert('Key Saved', `Saved key "${newKeyName.trim()}"`);
+      setSuccessMessage(`Saved key "${newKeyName.trim()}" and selected it as Active Key!`);
+      Alert.alert(
+        'Key Saved to Keystore',
+        `Saved "${newKeyName.trim()}" into local SQLite keystore.`,
+      );
     } catch (err: any) {
-      Alert.alert('Invalid Key Format', err.message || 'Could not parse public key PEM.');
+      Alert.alert('Invalid Key Format', err.message || 'Could not parse public key.');
     }
+  };
+
+  const handleAddKeyQrScanned = async ({ data }: { data: string }) => {
+    if (addKeyScanLock) return;
+    setAddKeyScanLock(true);
+    try {
+      const parsed = parsePublicKeyPayload(data, newKeyName);
+      setNewKeyPem(parsed.pem);
+      if (!newKeyName.trim() || parsed.detectedFormat === 'JSON Bundle') {
+        setNewKeyName(parsed.suggestedName);
+      }
+      setScannedKeyFormat(parsed.detectedFormat);
+      setAddKeyQrMode(false);
+      setAddKeyModalVisible(true);
+    } catch (err: any) {
+      Alert.alert(
+        'Invalid Key QR',
+        err.message || 'Scanned QR is not a valid Public Key (JSON, Base64, or PEM).',
+        [
+          {
+            text: 'Scan Again',
+            onPress: () => setAddKeyScanLock(false),
+          },
+          {
+            text: 'Cancel',
+            style: 'cancel',
+            onPress: () => {
+              setAddKeyScanLock(false);
+              setAddKeyQrMode(false);
+            },
+          },
+        ],
+      );
+      return;
+    }
+    setAddKeyScanLock(false);
+  };
+
+  const handleRootCaQrScanned = ({ data }: { data: string }) => {
+    if (rootCaScanLock) return;
+    setRootCaScanLock(true);
+    setRootCaQrMode(false);
+    try {
+      const parsed = parseRootCaPayload(data);
+      setRootCaInput(parsed.pem);
+      setScannedCaFormat(parsed.detectedFormat);
+    } catch {
+      // Show exactly what the scanner received so the user can inspect / fix it in the manager.
+      setRootCaInput(data);
+      setScannedCaFormat('Raw scan — needs review');
+    }
+    setRootCaModalVisible(true);
+    setRootCaScanLock(false);
   };
 
   return (
@@ -647,17 +766,43 @@ ${k.x5c[0]}
             </Pressable>
 
             {/* Bottom Key Buttons */}
-            <HStack space="sm" mt="$3">
+            <HStack space="xs" mt="$3">
               <Button
                 flex={1}
                 size="sm"
                 variant="outline"
-                borderColor="#475569"
-                onPress={() => setAddKeyModalVisible(true)}
+                borderColor={YELLOW}
+                bg="rgba(250, 204, 21, 0.08)"
+                onPress={() => {
+                  setAddKeyModalVisible(true);
+                }}
               >
-                <ButtonText color="#f8fafc" fontSize="$xs">
-                  + Add Key Manually
-                </ButtonText>
+                <HStack space="xs" alignItems="center">
+                  <Key size={13} color={YELLOW} />
+                  <ButtonText color={YELLOW} fontSize="$2xs" fontWeight="900">
+                    Import / Manage Key
+                  </ButtonText>
+                </HStack>
+              </Button>
+
+              <Button
+                flex={1}
+                size="sm"
+                variant="outline"
+                borderColor={YELLOW}
+                bg={addKeyQrMode ? YELLOW : 'rgba(250, 204, 21, 0.14)'}
+                onPress={() => {
+                  setAddKeyScanLock(false);
+                  setErrorMessage(null);
+                  setAddKeyQrMode(prev => !prev);
+                }}
+              >
+                <HStack space="xs" alignItems="center">
+                  <QrCode size={13} color={addKeyQrMode ? BLACK : YELLOW} />
+                  <ButtonText color={addKeyQrMode ? BLACK : YELLOW} fontSize="$2xs" fontWeight="900">
+                    {addKeyQrMode ? 'Key QR Mode ON' : 'Scan Key QR'}
+                  </ButtonText>
+                </HStack>
               </Button>
 
               <Button
@@ -672,9 +817,9 @@ ${k.x5c[0]}
                   <ActivityIndicator size="small" color={YELLOW} />
                 ) : (
                   <HStack space="xs" alignItems="center">
-                    <DownloadCloud size={14} color={YELLOW} />
-                    <ButtonText color={YELLOW} fontSize="$xs" fontWeight="800">
-                      Refetch from API
+                    <DownloadCloud size={13} color={YELLOW} />
+                    <ButtonText color={YELLOW} fontSize="$2xs" fontWeight="800">
+                      Refetch API
                     </ButtonText>
                   </HStack>
                 )}
@@ -682,7 +827,10 @@ ${k.x5c[0]}
             </HStack>
 
             {/* Current Server API endpoint link */}
-            <HStack justifyContent="flex-end" alignItems="center" mt="$2">
+            <HStack justifyContent="space-between" alignItems="center" mt="$2">
+              <Text color={rootCaCert ? PASS_COLOR : MUTED} fontSize="$2xs" fontWeight="700">
+                {rootCaCert ? '• Custom Root CA Active' : '• System TLS CA'}
+              </Text>
               <Pressable onPress={() => setServerModalVisible(true)}>
                 <Text color={MUTED} fontSize="$2xs">
                   Server API: <Text color={YELLOW} fontWeight="700">{apiBaseUrl}</Text> (Tap to configure)
@@ -691,16 +839,67 @@ ${k.x5c[0]}
             </HStack>
           </Box>
 
-          {/* Camera QR Scanner */}
-          <Box borderWidth={2} borderColor={YELLOW} borderRadius="$xl" bg={PANEL} p="$4">
-            <Text color="#f8fafc" fontSize="$sm" fontWeight="800" letterSpacing={1} mb="$3">
-              SCAN SHIFT QR CODE
-            </Text>
+          {/* Camera QR Scanner (Handles Shift Badge QR, Public Key QR, and Root CA QR inline on main surface) */}
+          <Box
+            borderWidth={2}
+            borderColor={rootCaQrMode ? PASS_COLOR : addKeyQrMode ? '#38bdf8' : YELLOW}
+            borderRadius="$xl"
+            bg={PANEL}
+            p="$4"
+          >
+            <HStack justifyContent="space-between" alignItems="center" mb="$2">
+              <Text
+                color={rootCaQrMode ? PASS_COLOR : addKeyQrMode ? '#38bdf8' : '#f8fafc'}
+                fontSize="$sm"
+                fontWeight="800"
+                letterSpacing={1}
+              >
+                {rootCaQrMode
+                  ? 'SCAN ROOT CA CERTIFICATE QR'
+                  : addKeyQrMode
+                  ? 'SCAN PUBLIC KEY QR (JSON / BASE64 / PEM)'
+                  : 'SCAN SHIFT QR CODE'}
+              </Text>
+              {addKeyQrMode || rootCaQrMode ? (
+                <Pressable
+                  onPress={() => {
+                    setAddKeyQrMode(false);
+                    setAddKeyScanLock(false);
+                    setRootCaQrMode(false);
+                    setRootCaScanLock(false);
+                  }}
+                >
+                  <Text color={YELLOW} fontSize="$2xs" fontWeight="900">
+                    Switch to Shift Scan ✕
+                  </Text>
+                </Pressable>
+              ) : null}
+            </HStack>
+
+            {addKeyQrMode ? (
+              <Input variant="outline" size="sm" borderColor="#334155" mb="$2.5">
+                <InputField
+                  value={newKeyName}
+                  onChangeText={setNewKeyName}
+                  placeholder="Optional Key Alias (auto-filled if JSON QR has kid)"
+                  placeholderTextColor="#64748b"
+                  color="#f8fafc"
+                />
+              </Input>
+            ) : null}
 
             <Box
               h={cameraBoxHeight}
               borderWidth={2}
-              borderColor={errorMessage ? FAIL_COLOR : YELLOW}
+              borderColor={
+                errorMessage
+                  ? FAIL_COLOR
+                  : rootCaQrMode
+                  ? PASS_COLOR
+                  : addKeyQrMode
+                  ? '#38bdf8'
+                  : YELLOW
+              }
               borderRadius="$lg"
               overflow="hidden"
               bg="#050914"
@@ -712,7 +911,22 @@ ${k.x5c[0]}
                   facing="back"
                   enableTorch={isTorchOn}
                   barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-                  onBarcodeScanned={(isVerifying || scanCooldown || Boolean(completedShiftPrompt) || Boolean(activeShiftPrompt)) ? undefined : handleBarcodeScanned}
+                  onBarcodeScanned={
+                    isVerifying ||
+                    scanCooldown ||
+                    Boolean(completedShiftPrompt) ||
+                    Boolean(activeShiftPrompt) ||
+                    addKeyModalVisible ||
+                    serverModalVisible ||
+                    addKeyScanLock ||
+                    rootCaScanLock
+                      ? undefined
+                      : rootCaQrMode
+                      ? handleRootCaQrScanned
+                      : addKeyQrMode
+                      ? handleAddKeyQrScanned
+                      : handleBarcodeScanned
+                  }
                 />
               ) : (
                 <VStack flex={1} alignItems="center" justifyContent="center" px="$4">
@@ -1064,59 +1278,71 @@ ${k.x5c[0]}
         </Pressable>
       </Modal>
 
-      {/* Add Key Modal */}
-      <Modal
+      {/* Public Key Import Modal (Dedicated QR Review & SQLite Storage) */}
+      <PublicKeyModal
         visible={addKeyModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setAddKeyModalVisible(false)}
-      >
-        <View style={styles.modalBackdrop}>
-          <Box bg={PANEL} borderWidth={2} borderColor={YELLOW} borderRadius="$xl" p="$4" width="100%" maxWidth={500}>
-            <Text color={YELLOW} fontSize="$xl" fontWeight="900" mb="$3">
-              Add Public Key (PEM)
-            </Text>
-            <VStack space="sm">
-              <Input variant="outline" size="md" borderColor="#334155">
-                <InputField
-                  value={newKeyName}
-                  onChangeText={setNewKeyName}
-                  placeholder="Key alias (e.g. Master Shift Key)"
-                  placeholderTextColor="#64748b"
-                  color="#f8fafc"
-                />
-              </Input>
+        alias={newKeyName}
+        onChangeAlias={setNewKeyName}
+        value={newKeyPem}
+        onChangeValue={setNewKeyPem}
+        scannedFormat={scannedKeyFormat}
+        onClose={() => {
+          setScannedKeyFormat(null);
+          setAddKeyModalVisible(false);
+        }}
+        onScanQr={() => {
+          setAddKeyModalVisible(false);
+          setAddKeyScanLock(false);
+          setAddKeyQrMode(true);
+        }}
+        onSave={async (alias, pem) => {
+          const insertedId = await addPublicKey(alias, pem);
+          await loadKeys();
+          setSelectedKeyId(insertedId);
+          setNewKeyName('');
+          setNewKeyPem('');
+          setScannedKeyFormat(null);
+          setAddKeyQrMode(false);
+          setAddKeyModalVisible(false);
+          setSuccessMessage(`Saved key "${alias}" and selected it as Active Key!`);
+          Alert.alert(
+            'Key Saved to Keystore',
+            `Saved "${alias}" into local SQLite keystore and selected it as Active Key.`,
+          );
+        }}
+      />
 
-              <Input variant="outline" size="md" borderColor="#334155">
-                <InputField
-                  value={newKeyPem}
-                  onChangeText={setNewKeyPem}
-                  placeholder="Paste PEM (-----BEGIN PUBLIC KEY----- ...)"
-                  placeholderTextColor="#64748b"
-                  color="#f8fafc"
-                  multiline
-                  numberOfLines={5}
-                  textAlignVertical="top"
-                  minHeight={110}
-                />
-              </Input>
+      {/* Root CA Manager Modal (large viewer/editor) */}
+      <RootCaModal
+        visible={rootCaModalVisible}
+        value={rootCaInput}
+        onChangeValue={setRootCaInput}
+        scannedFormat={scannedCaFormat}
+        appliedCa={rootCaCert}
+        onClose={() => {
+          setRootCaModalVisible(false);
+          setServerModalVisible(true);
+        }}
+        onScanQr={() => {
+          setRootCaModalVisible(false);
+          setAddKeyQrMode(false);
+          setRootCaScanLock(false);
+          setRootCaQrMode(true);
+        }}
+        onApply={async raw => {
+          await setRootCaCert(raw.trim());
+          setScannedCaFormat(null);
+          setRootCaModalVisible(false);
+          setServerModalVisible(true);
+          Alert.alert('Root CA Applied', 'Custom Root CA is now trusted for HTTPS connections.');
+        }}
+        onClear={async () => {
+          await setRootCaCert('');
+          setScannedCaFormat(null);
+        }}
+      />
 
-              <HStack space="sm" justifyContent="flex-end" mt="$2">
-                <Button variant="outline" borderColor="#64748b" onPress={() => setAddKeyModalVisible(false)}>
-                  <ButtonText color="#cbd5e1">Cancel</ButtonText>
-                </Button>
-                <Button bg={YELLOW} onPress={handleSaveManualKey}>
-                  <ButtonText color={BLACK} fontWeight="900">
-                    Save Key
-                  </ButtonText>
-                </Button>
-              </HStack>
-            </VStack>
-          </Box>
-        </View>
-      </Modal>
-
-      {/* Server API URL Modal */}
+      {/* Server API URL & HTTPS Root CA Modal */}
       <Modal
         visible={serverModalVisible}
         transparent
@@ -1124,22 +1350,110 @@ ${k.x5c[0]}
         onRequestClose={() => setServerModalVisible(false)}
       >
         <View style={styles.modalBackdrop}>
-          <Box bg={PANEL} borderWidth={2} borderColor={YELLOW} borderRadius="$xl" p="$4" width="100%" maxWidth={480}>
-            <Text color={YELLOW} fontSize="$lg" fontWeight="900" mb="$2">
-              Configure Backend Server API
+          <Box bg={PANEL} borderWidth={2} borderColor={YELLOW} borderRadius="$xl" p="$4" width="100%" maxWidth={500}>
+            <HStack justifyContent="space-between" alignItems="center" mb="$1">
+              <Text color={YELLOW} fontSize="$lg" fontWeight="900">
+                Server API &amp; HTTPS Root CA
+              </Text>
+              <Text
+                color={serverUrlInput.trim().toLowerCase().startsWith('https://') ? PASS_COLOR : YELLOW}
+                fontSize="$2xs"
+                fontWeight="900"
+              >
+                {serverUrlInput.trim().toLowerCase().startsWith('https://') ? 'HTTPS TLS' : 'HTTP'}
+              </Text>
+            </HStack>
+
+            <Text color={MUTED} fontSize="$2xs" mb="$2">
+              Supports both <Text color={PASS_COLOR} fontWeight="700">https://</Text> and <Text color={YELLOW} fontWeight="700">http://</Text> endpoints.
             </Text>
-            <Text color={MUTED} fontSize="$xs" mb="$3">
-              Set the backend API host (e.g. http://10.0.2.2:8000 for Android emulator or http://192.168.1.50:8000 for physical device)
-            </Text>
+
+            <HStack space="xs" mb="$2">
+              <Button
+                size="xs"
+                variant="outline"
+                borderColor={PASS_COLOR}
+                bg={serverUrlInput.trim().toLowerCase().startsWith('https://') ? 'rgba(34, 197, 94, 0.2)' : 'transparent'}
+                onPress={() => {
+                  const stripped = serverUrlInput.trim().replace(/^https?:\/\//i, '');
+                  setServerUrlInput(`https://${stripped}`);
+                }}
+              >
+                <ButtonText color={PASS_COLOR} fontSize="$2xs" fontWeight="900">
+                  Use https://
+                </ButtonText>
+              </Button>
+              <Button
+                size="xs"
+                variant="outline"
+                borderColor={YELLOW}
+                bg={serverUrlInput.trim().toLowerCase().startsWith('http://') ? 'rgba(250, 204, 21, 0.15)' : 'transparent'}
+                onPress={() => {
+                  const stripped = serverUrlInput.trim().replace(/^https?:\/\//i, '');
+                  setServerUrlInput(`http://${stripped}`);
+                }}
+              >
+                <ButtonText color={YELLOW} fontSize="$2xs" fontWeight="900">
+                  Use http://
+                </ButtonText>
+              </Button>
+            </HStack>
+
             <Input variant="outline" size="md" borderColor="#334155" mb="$3">
               <InputField
                 value={serverUrlInput}
                 onChangeText={setServerUrlInput}
-                placeholder="http://10.0.2.2:8000"
+                placeholder="https://veriflow.talhahub.io or http://10.0.2.2:8000"
                 placeholderTextColor="#64748b"
                 color="#f8fafc"
+                autoCapitalize="none"
+                autoCorrect={false}
               />
             </Input>
+
+            {/* Root CA Certificate summary (full editor lives in its own modal) */}
+            <Box
+              bg={PANEL_ALT}
+              p="$2.5"
+              borderRadius="$lg"
+              borderWidth={1}
+              borderColor={rootCaCert || rootCaInput.trim() ? PASS_COLOR : '#334155'}
+              mb="$3"
+            >
+              <HStack justifyContent="space-between" alignItems="center">
+                <VStack flex={1} mr="$2">
+                  <Text color="#f8fafc" fontSize="$xs" fontWeight="800">
+                    Root CA Certificate (For HTTPS)
+                  </Text>
+                  <Text
+                    color={rootCaCert ? PASS_COLOR : rootCaInput.trim() ? YELLOW : MUTED}
+                    fontSize="$2xs"
+                    fontWeight="700"
+                  >
+                    {rootCaCert
+                      ? '✓ Custom Root CA applied'
+                      : rootCaInput.trim()
+                      ? '• Draft pending — open manager and Apply'
+                      : '• Using system CAs only'}
+                  </Text>
+                </VStack>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  borderColor={YELLOW}
+                  bg="rgba(250, 204, 21, 0.14)"
+                  onPress={() => {
+                    setServerModalVisible(false);
+                    setRootCaModalVisible(true);
+                  }}
+                >
+                  <ButtonText color={YELLOW} fontSize="$2xs" fontWeight="900">
+                    Manage Root CA
+                  </ButtonText>
+                </Button>
+              </HStack>
+            </Box>
+
             <HStack space="sm" justifyContent="flex-end">
               <Button variant="outline" borderColor="#64748b" onPress={() => setServerModalVisible(false)}>
                 <ButtonText color="#cbd5e1">Cancel</ButtonText>
@@ -1147,13 +1461,36 @@ ${k.x5c[0]}
               <Button
                 bg={YELLOW}
                 onPress={async () => {
-                  await setApiBaseUrl(serverUrlInput);
-                  setServerModalVisible(false);
-                  await handleFetchServerKeys(false);
+                  try {
+                    const normalizedUrl = normalizeApiBaseUrl(serverUrlInput);
+                    if (!normalizedUrl) {
+                      Alert.alert('Invalid URL', 'Please enter a valid http:// or https:// Server API URL.');
+                      return;
+                    }
+                    await setApiBaseUrl(normalizedUrl);
+                    setServerUrlInput(normalizedUrl);
+                    let appliedToNative = false;
+                    if (rootCaInput.trim()) {
+                      appliedToNative = await setRootCaCert(rootCaInput.trim());
+                    } else {
+                      await setRootCaCert('');
+                    }
+                    setScannedCaFormat(null);
+                    setServerModalVisible(false);
+                    if (rootCaInput.trim() && !appliedToNative) {
+                      Alert.alert(
+                        'Root CA Notice',
+                        'Root CA saved. Because the app is running in Expo Go without compiled native TLS hooks, Android OS will block HTTPS unless talhaRootCA.crt is installed in Android Settings -> Security -> Install Certificate -> CA certificate.',
+                      );
+                    }
+                    await handleFetchServerKeys(false);
+                  } catch (err: any) {
+                    Alert.alert('Root CA Error', err.message || 'Invalid Root CA certificate.');
+                  }
                 }}
               >
                 <ButtonText color={BLACK} fontWeight="900">
-                  Save & Refetch
+                  Save &amp; Refetch
                 </ButtonText>
               </Button>
             </HStack>

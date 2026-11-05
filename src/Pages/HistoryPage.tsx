@@ -76,11 +76,14 @@ export default function HistoryPage() {
   const handleSyncServerPermissions = async () => {
     setIsRefreshing(true);
     try {
-      const ok = await refreshPermissions();
-      if (ok) {
+      const result = await refreshPermissions();
+      if (result.ok) {
         Alert.alert('Permissions Synced', 'Successfully updated permissions from server.');
       } else {
-        Alert.alert('Sync Unavailable', 'Server unreachable or offline. Using token permissions.');
+        Alert.alert(
+          result.status === 401 ? 'Shift Token Rejected' : 'Sync Unavailable',
+          result.error || 'Server unreachable or offline. Using token permissions.',
+        );
       }
       await loadData();
     } finally {

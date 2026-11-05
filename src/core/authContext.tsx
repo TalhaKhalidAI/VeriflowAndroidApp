@@ -1,7 +1,15 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import { Platform } from 'react-native';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
+import { Alert, NativeModules, Platform } from 'react-native';
+import { useQuery } from '@tanstack/react-query';
 import { getAppSetting, initDatabase, setAppSetting, syncRulesFromPayload } from './db';
+import { buildApiUrl, normalizeApiBaseUrl, parseRootCaPayload } from './jwt';
 import { ShiftSession } from './types';
+
+export interface RefreshPermissionsResult {
+  ok: boolean;
+  status?: number;
+  error?: string;
+}
 
 interface AuthContextType {
   session: ShiftSession | null;
@@ -9,9 +17,12 @@ interface AuthContextType {
   isLoading: boolean;
   apiBaseUrl: string;
   setApiBaseUrl: (url: string) => Promise<void>;
+  rootCaCert: string;
+  setRootCaCert: (pemOrEmpty: string) => Promise<boolean>;
+  isNativeCaAvailable: boolean;
   hasPermission: (permission: string) => boolean;
   updateSessionPermissions: (newPerms: Record<string, boolean>, role?: string) => Promise<void>;
-  refreshPermissions: () => Promise<boolean>;
+  refreshPermissions: () => Promise<RefreshPermissionsResult>;
   markOfflineCheckout: () => Promise<void>;
   clearOfflineCheckout: () => Promise<void>;
   login: (token: string, payload: any, publicKeyId?: number) => Promise<void>;
@@ -23,17 +34,41 @@ const DEFAULT_API_URL =
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+export const isNativeCaAvailable = Boolean(
+  NativeModules?.VeriFlowCustomCa && typeof NativeModules.VeriFlowCustomCa.setRootCa === 'function'
+);
+
+async function applyNativeRootCa(pem: string): Promise<boolean> {
+  try {
+    const customCaMod = NativeModules?.VeriFlowCustomCa;
+    if (customCaMod && typeof customCaMod.setRootCa === 'function') {
+      await customCaMod.setRootCa(pem || null);
+      return true;
+    }
+  } catch (e) {
+    console.warn('Native Root CA module sync skipped or failed:', e);
+  }
+  return false;
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<ShiftSession | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [apiBaseUrl, setApiBaseUrlState] = useState<string>(DEFAULT_API_URL);
+  const [rootCaCert, setRootCaCertState] = useState<string>('');
 
   useEffect(() => {
     async function restore() {
       try {
         await initDatabase();
         const savedUrl = await getAppSetting('api_base_url', DEFAULT_API_URL);
-        if (savedUrl) setApiBaseUrlState(savedUrl);
+        if (savedUrl) setApiBaseUrlState(normalizeApiBaseUrl(savedUrl));
+
+        const savedRootCa = await getAppSetting('root_ca_cert', '');
+        if (savedRootCa) {
+          setRootCaCertState(savedRootCa);
+          await applyNativeRootCa(savedRootCa);
+        }
 
         const savedSessionJson = await getAppSetting('active_session', '');
         if (savedSessionJson) {
@@ -55,9 +90,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setApiBaseUrl = async (url: string) => {
-    const trimmed = url.trim().replace(/\/+$/, '');
-    setApiBaseUrlState(trimmed);
-    await setAppSetting('api_base_url', trimmed);
+    const normalized = normalizeApiBaseUrl(url);
+    if (!normalized) return;
+    setApiBaseUrlState(normalized);
+    await setAppSetting('api_base_url', normalized);
+  };
+
+  const setRootCaCert = async (pemOrEmpty: string): Promise<boolean> => {
+    const trimmed = (pemOrEmpty || '').trim();
+    if (!trimmed) {
+      setRootCaCertState('');
+      await setAppSetting('root_ca_cert', '');
+      await applyNativeRootCa('');
+      return true;
+    }
+    const parsed = parseRootCaPayload(trimmed);
+    setRootCaCertState(parsed.pem);
+    await setAppSetting('root_ca_cert', parsed.pem);
+    return await applyNativeRootCa(parsed.pem);
   };
 
   const hasPermission = (perm: string): boolean => {
@@ -182,7 +232,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // Try fetching fresh permissions from server API in background if online
     try {
-      const profileRes = await fetch(`${apiBaseUrl}/app/v1/users/users_config/me`, {
+      const profileRes = await fetch(buildApiUrl(apiBaseUrl, '/users/users_config/me'), {
         headers: { Authorization: `Bearer ${token.trim()}` },
       }).catch(() => null);
 
@@ -217,14 +267,115 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await setAppSetting('active_session', JSON.stringify(newSession));
   };
 
-  const refreshPermissions = useCallback(async (): Promise<boolean> => {
-    if (!session?.token) return false;
+  // TanStack Query: Live background permission polling & real-time notification
+  const { data: remoteProfile } = useQuery({
+    queryKey: ['admin_permissions_sync', session?.userId, session?.token, apiBaseUrl],
+    queryFn: async () => {
+      if (!session?.token) return null;
+      try {
+        const url = buildApiUrl(apiBaseUrl, '/users/users_config/me');
+        const res = await fetch(url, {
+          headers: {
+            Authorization: `Bearer ${session.token}`,
+            Accept: 'application/json',
+          },
+        });
+        if (!res.ok) {
+          return null;
+        }
+        return await res.json();
+      } catch {
+        return null;
+      }
+    },
+    enabled: Boolean(session?.token && session?.userId),
+    refetchInterval: 10000, // Check for admin updates every 10 seconds!
+    refetchIntervalInBackground: true,
+  });
+
+  // Track and notify changes in permissions
+  const prevPermsRef = useRef<Record<string, boolean> | null>(null);
+
+  useEffect(() => {
+    if (!remoteProfile || !session) return;
+
+    const serverPerms: Record<string, boolean> = {};
+    if (Array.isArray(remoteProfile.permissions)) {
+      for (const p of remoteProfile.permissions) serverPerms[p] = true;
+    } else if (remoteProfile.permissions && typeof remoteProfile.permissions === 'object') {
+      Object.assign(serverPerms, remoteProfile.permissions);
+    }
+
+    const currentPerms = session.permissions || {};
+
+    // Initialize baseline on first fetch so we don't alert on initial startup
+    if (!prevPermsRef.current) {
+      prevPermsRef.current = { ...currentPerms, ...serverPerms };
+      return;
+    }
+
+    const prev = prevPermsRef.current;
+    const added: string[] = [];
+    const removed: string[] = [];
+
+    // Detect newly granted permissions
+    for (const [k, v] of Object.entries(serverPerms)) {
+      if (v && !prev[k]) {
+        added.push(k);
+      }
+    }
+
+    // Detect newly revoked permissions
+    for (const [k, v] of Object.entries(prev)) {
+      if (v && !serverPerms[k]) {
+        removed.push(k);
+      }
+    }
+
+    if (added.length > 0 || removed.length > 0) {
+      prevPermsRef.current = { ...serverPerms };
+
+      setSession(s => {
+        if (!s) return null;
+        const updated: ShiftSession = {
+          ...s,
+          role: remoteProfile.user_role || s.role,
+          permissions: { ...serverPerms },
+        };
+        void setAppSetting('active_session', JSON.stringify(updated));
+        return updated;
+      });
+
+      const changes: string[] = [];
+      if (added.length > 0) {
+        changes.push(`🟢 GRANTED:\n${added.map(p => `  • ${p}`).join('\n')}`);
+      }
+      if (removed.length > 0) {
+        changes.push(`🔴 REVOKED:\n${removed.map(p => `  • ${p}`).join('\n')}`);
+      }
+
+      Alert.alert(
+        '🛡️ Permissions Updated by Admin',
+        `Your access permissions have been updated in real-time:\n\n${changes.join('\n\n')}`,
+      );
+    }
+  }, [remoteProfile, session?.userId]);
+
+  const refreshPermissions = useCallback(async (): Promise<RefreshPermissionsResult> => {
+    if (!session?.token) {
+      return { ok: false, error: 'No active session token found.' };
+    }
     try {
-      const res = await fetch(`${apiBaseUrl}/app/v1/users/users_config/me`, {
+      const url = buildApiUrl(apiBaseUrl, '/users/users_config/me');
+      const res = await fetch(url, {
         headers: { Authorization: `Bearer ${session.token}` },
       }).catch(() => null);
 
-      if (res && res.ok) {
+      if (!res) {
+        return { ok: false, error: 'Network request failed. Server unreachable or offline.' };
+      }
+
+      if (res.ok) {
         const profile = await res.json();
         const serverPerms: Record<string, boolean> = {};
         if (Array.isArray(profile.permissions)) {
@@ -244,12 +395,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           void setAppSetting('active_session', JSON.stringify(updated));
           return updated;
         });
-        return true;
+        return { ok: true, status: res.status };
       }
-    } catch (e) {
+
+      const errBody = await res.json().catch(() => ({}));
+      const errMsg = errBody.detail || errBody.error || errBody.message || `Server responded with status ${res.status}`;
+
+      if (res.status === 401) {
+        return {
+          ok: false,
+          status: 401,
+          error: 'Session token rejected by server (401: Invalid token). This shift session was ended on the server or signed with an older key. Please check out and scan a fresh shift badge.',
+        };
+      }
+
+      if (res.status === 404) {
+        return {
+          ok: false,
+          status: 404,
+          error: `API endpoint not found (404) at ${url}. Please verify Server API URL in Settings.`,
+        };
+      }
+
+      return { ok: false, status: res.status, error: errMsg };
+    } catch (e: any) {
       console.warn('refreshPermissions failed:', e);
+      return { ok: false, error: e.message || 'Unknown error refreshing permissions.' };
     }
-    return false;
   }, [session?.token, apiBaseUrl]);
 
   const updateSessionPermissions = useCallback(async (newPerms: Record<string, boolean>, role?: string) => {
@@ -302,6 +474,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isLoading,
         apiBaseUrl,
         setApiBaseUrl,
+        rootCaCert,
+        setRootCaCert,
+        isNativeCaAvailable,
         hasPermission,
         updateSessionPermissions,
         refreshPermissions,

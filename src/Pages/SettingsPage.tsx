@@ -11,6 +11,8 @@ import {
   Text,
   VStack,
 } from '@gluestack-ui/themed';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useFocusEffect } from 'expo-router';
 import {
   Pencil,
   Trash2,
@@ -21,10 +23,15 @@ import {
   ShieldAlert,
   ShieldCheck,
   Lock,
+  QrCode,
+  Flashlight,
+  FlashlightOff,
 } from 'lucide-react-native';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, StyleSheet, View } from 'react-native';
 import { useAuth } from '../core/authContext';
+import { RootCaModal } from '../components/RootCaModal';
+import { PublicKeyModal } from '../components/PublicKeyModal';
 import {
   addInventoryItem,
   addPublicKey,
@@ -36,7 +43,13 @@ import {
   updateInventoryItem,
   updatePublicKey,
 } from '../core/db';
-import { normalizePublicKey } from '../core/jwt';
+import {
+  buildApiUrl,
+  normalizeApiBaseUrl,
+  normalizePublicKey,
+  parsePublicKeyPayload,
+  parseRootCaPayload,
+} from '../core/jwt';
 import { InventoryRecord, PublicKeyRecord } from '../core/types';
 
 const BLACK = '#07111d';
@@ -48,7 +61,15 @@ const PASS_COLOR = '#22c55e';
 const FAIL_COLOR = '#ef4444';
 
 export default function SettingsPage() {
-  const { session, hasPermission, refreshPermissions, apiBaseUrl, setApiBaseUrl } = useAuth();
+  const {
+    session,
+    hasPermission,
+    refreshPermissions,
+    apiBaseUrl,
+    setApiBaseUrl,
+    rootCaCert,
+    setRootCaCert,
+  } = useAuth();
 
   // Tab: 'KEYS' | 'RULES' | 'NETWORK'
   const [activeTab, setActiveTab] = useState<'KEYS' | 'RULES' | 'NETWORK'>('RULES');
@@ -74,6 +95,14 @@ export default function SettingsPage() {
   const [editKeyValue, setEditKeyValue] = useState('');
   const [isFetchingServerKeys, setIsFetchingServerKeys] = useState(false);
 
+  // Key QR Scanner state
+  const [permission, requestPermission] = useCameraPermissions();
+  const [keyQrScannerVisible, setKeyQrScannerVisible] = useState(false);
+  const [isKeyScannerTorchOn, setIsKeyScannerTorchOn] = useState(false);
+  const [keyScanLock, setKeyScanLock] = useState(false);
+  const [scannedKeyFormat, setScannedKeyFormat] = useState<string | null>(null);
+  const [publicKeyModalVisible, setPublicKeyModalVisible] = useState(false);
+
   // Inventory Rules state
   const [rules, setRules] = useState<InventoryRecord[]>([]);
   const [ruleName, setRuleName] = useState('');
@@ -84,8 +113,21 @@ export default function SettingsPage() {
   const [editRuleKey, setEditRuleKey] = useState('');
   const [editRuleValue, setEditRuleValue] = useState('');
 
-  // Network state
+  // Network & Root CA state
   const [serverUrl, setServerUrl] = useState(apiBaseUrl);
+  const [rootCaInput, setRootCaInput] = useState(rootCaCert);
+  const [caQrScannerVisible, setCaQrScannerVisible] = useState(false);
+  const [rootCaModalVisible, setRootCaModalVisible] = useState(false);
+  const [caScanLock, setCaScanLock] = useState(false);
+  const [scannedCaFormat, setScannedCaFormat] = useState<string | null>(null);
+
+  useEffect(() => {
+    setServerUrl(apiBaseUrl);
+  }, [apiBaseUrl]);
+
+  useEffect(() => {
+    setRootCaInput(rootCaCert);
+  }, [rootCaCert]);
 
   const refresh = async () => {
     try {
@@ -106,26 +148,102 @@ export default function SettingsPage() {
     void refresh();
   }, [canViewKeys, canViewRules]);
 
+  useFocusEffect(
+    useCallback(() => {
+      void refresh();
+      return () => {
+        setKeyQrScannerVisible(false);
+        setCaQrScannerVisible(false);
+        setIsKeyScannerTorchOn(false);
+        setKeyScanLock(false);
+        setCaScanLock(false);
+      };
+    }, [canViewKeys, canViewRules]),
+  );
+
+  const handleRootCaQrScanned = ({ data }: { data: string }) => {
+    if (caScanLock) return;
+    setCaScanLock(true);
+    setCaQrScannerVisible(false);
+    setIsKeyScannerTorchOn(false);
+    try {
+      const parsed = parseRootCaPayload(data);
+      setRootCaInput(parsed.pem);
+      setScannedCaFormat(parsed.detectedFormat);
+    } catch {
+      // Show exactly what the scanner received so it can be inspected / fixed in the manager.
+      setRootCaInput(data);
+      setScannedCaFormat('Raw scan — needs review');
+    }
+    setRootCaModalVisible(true);
+    setCaScanLock(false);
+  };
+
   // ---------------- PUBLIC KEY ACTIONS ----------------
   const saveKey = async () => {
     if (!canCreateKeys) {
       Alert.alert('Permission Denied', 'Your token lacks "keys.create" permission.');
       return;
     }
-    if (!keyName.trim() || !keyValue.trim()) {
-      Alert.alert('Missing Fields', 'Please enter a key name and PEM block.');
+    if (!keyName.trim()) {
+      Alert.alert('Key Alias Required', 'Please enter a Key Alias (name) before adding the key.');
+      return;
+    }
+    if (!keyValue.trim()) {
+      Alert.alert('Missing Key Certificate', 'Please paste or scan a Public Key (JSON, Base64, or PEM).');
       return;
     }
     try {
-      const normalized = normalizePublicKey(keyValue);
-      await addPublicKey(keyName.trim(), normalized);
+      const parsed = parsePublicKeyPayload(keyValue, keyName.trim());
+      await addPublicKey(keyName.trim(), parsed.pem);
       setKeyName('');
       setKeyValue('');
+      setScannedKeyFormat(null);
       await refresh();
-      Alert.alert('Saved', `Public key "${keyName.trim()}" added to local storage.`);
+      Alert.alert(
+        'Saved to Keystore',
+        `Public key "${keyName.trim()}" added to local SQLite keystore.`,
+      );
     } catch (err: any) {
-      Alert.alert('Invalid PEM', err.message || 'Key parsing failed');
+      Alert.alert('Invalid Public Key', err.message || 'Key parsing failed');
     }
+  };
+
+  const handleKeyQrScanned = async ({ data }: { data: string }) => {
+    if (keyScanLock) return;
+    setKeyScanLock(true);
+    try {
+      const parsed = parsePublicKeyPayload(data, keyName);
+      setKeyValue(parsed.pem);
+      if (!keyName.trim() || parsed.detectedFormat === 'JSON Bundle') {
+        setKeyName(parsed.suggestedName);
+      }
+      setScannedKeyFormat(parsed.detectedFormat);
+      setKeyQrScannerVisible(false);
+      setIsKeyScannerTorchOn(false);
+      setPublicKeyModalVisible(true);
+    } catch (err: any) {
+      Alert.alert(
+        'Invalid Key QR',
+        err.message || 'Scanned QR is not a valid Public Key (JSON, Base64, or PEM).',
+        [
+          {
+            text: 'Scan Again',
+            onPress: () => setKeyScanLock(false),
+          },
+          {
+            text: 'Close',
+            style: 'cancel',
+            onPress: () => {
+              setKeyQrScannerVisible(false);
+              setKeyScanLock(false);
+            },
+          },
+        ],
+      );
+      return;
+    }
+    setKeyScanLock(false);
   };
 
   const saveEditKey = async () => {
@@ -171,8 +289,9 @@ export default function SettingsPage() {
     }
 
     setIsFetchingServerKeys(true);
+    const targetJwksUrl = buildApiUrl(apiBaseUrl, '/keys/jwks');
     try {
-      const res = await fetch(`${apiBaseUrl}/app/v1/keys/jwks`, {
+      const res = await fetch(targetJwksUrl, {
         headers: { Accept: 'application/json' },
       }).catch(() => null);
 
@@ -202,7 +321,7 @@ ${k.x5c[0]}
           Alert.alert('Import Complete', `Successfully imported ${addedCount} public key(s) from server.`);
         }
       } else {
-        Alert.alert('Connection Failed', `Could not reach ${apiBaseUrl}/app/v1/keys/jwks`);
+        Alert.alert('Connection Failed', `Could not reach ${targetJwksUrl}`);
       }
     } catch (err: any) {
       Alert.alert('Fetch Error', err.message || 'Could not fetch public keys from server.');
@@ -633,15 +752,138 @@ ${k.x5c[0]}
                       )}
                     </Button>
 
+                    {/* Public Key Action Buttons */}
+                    <HStack space="xs">
+                      <Button
+                        flex={1}
+                        bg={keyQrScannerVisible ? YELLOW : 'rgba(250, 204, 21, 0.14)'}
+                        borderWidth={1}
+                        borderColor={YELLOW}
+                        onPress={() => {
+                          setKeyScanLock(false);
+                          setIsKeyScannerTorchOn(false);
+                          setKeyQrScannerVisible(prev => !prev);
+                        }}
+                      >
+                        <HStack space="xs" alignItems="center">
+                          <QrCode size={16} color={keyQrScannerVisible ? BLACK : YELLOW} />
+                          <ButtonText color={keyQrScannerVisible ? BLACK : YELLOW} fontWeight="900" fontSize="$xs">
+                            {keyQrScannerVisible ? 'Close Camera' : 'Scan Key QR'}
+                          </ButtonText>
+                        </HStack>
+                      </Button>
+
+                      <Button
+                        flex={1}
+                        variant="outline"
+                        borderColor={YELLOW}
+                        bg={keyValue.trim() ? 'rgba(34, 197, 94, 0.15)' : 'rgba(250, 204, 21, 0.08)'}
+                        onPress={() => setPublicKeyModalVisible(true)}
+                      >
+                        <HStack space="xs" alignItems="center">
+                          <Key size={16} color={YELLOW} />
+                          <ButtonText color={YELLOW} fontWeight="900" fontSize="$xs">
+                            {keyValue.trim() ? 'Review Key Modal' : 'Import / Manage Key'}
+                          </ButtonText>
+                        </HStack>
+                      </Button>
+                    </HStack>
+
+                    {keyQrScannerVisible ? (
+                      <Box
+                        bg={PANEL_ALT}
+                        borderWidth={2}
+                        borderColor={YELLOW}
+                        borderRadius="$xl"
+                        p="$3"
+                      >
+                        <Text color={MUTED} fontSize="$2xs" mb="$2" textAlign="center">
+                          Aim at Web App Public Key QR (<Text color={YELLOW} fontWeight="800">Clean Base64</Text>, <Text color={YELLOW} fontWeight="800">JSON</Text>, or <Text color={YELLOW} fontWeight="800">PEM</Text>)
+                        </Text>
+
+                        <Box
+                          h={250}
+                          borderWidth={2}
+                          borderColor={YELLOW}
+                          borderRadius="$lg"
+                          overflow="hidden"
+                          bg="#050914"
+                          position="relative"
+                        >
+                          {permission?.granted ? (
+                            <CameraView
+                              style={StyleSheet.absoluteFill}
+                              facing="back"
+                              enableTorch={isKeyScannerTorchOn}
+                              barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                              onBarcodeScanned={keyScanLock ? undefined : handleKeyQrScanned}
+                            />
+                          ) : (
+                            <VStack flex={1} alignItems="center" justifyContent="center" px="$4">
+                              <Text color="#f8fafc" fontSize="$sm" fontWeight="800" textAlign="center">
+                                Camera permission is required to scan Public Key QR codes.
+                              </Text>
+                              <Button mt="$3" bg={YELLOW} size="sm" onPress={() => requestPermission()}>
+                                <ButtonText color={BLACK} fontWeight="800">
+                                  Grant Camera Permission
+                                </ButtonText>
+                              </Button>
+                            </VStack>
+                          )}
+
+                          {permission?.granted ? (
+                            <Pressable
+                              position="absolute"
+                              top={12}
+                              right={12}
+                              zIndex={10}
+                              onPress={() => setIsKeyScannerTorchOn(prev => !prev)}
+                              bg={isKeyScannerTorchOn ? YELLOW : 'rgba(5, 9, 20, 0.75)'}
+                              p="$2"
+                              borderRadius="$md"
+                              borderWidth={1}
+                              borderColor={isKeyScannerTorchOn ? YELLOW : 'rgba(255, 255, 255, 0.3)'}
+                              alignItems="center"
+                              justifyContent="center"
+                            >
+                              {isKeyScannerTorchOn ? (
+                                <Flashlight size={18} color={BLACK} />
+                              ) : (
+                                <FlashlightOff size={18} color="#f8fafc" />
+                              )}
+                            </Pressable>
+                          ) : null}
+
+                          <View style={styles.reticleOverlay} pointerEvents="none">
+                            <View style={styles.reticleBox} />
+                          </View>
+                        </Box>
+                      </Box>
+                    ) : null}
+
                     <Text color={MUTED} fontSize="$2xs" textAlign="center">
-                      — OR ADD KEY MANUALLY —
+                      — OR PASTE KEY MANUALLY (JSON / BASE64 / PEM) —
                     </Text>
 
-                    <Input variant="outline" size="sm" borderColor="#334155">
+                    {scannedKeyFormat ? (
+                      <Box
+                        bg="rgba(34, 197, 94, 0.15)"
+                        borderWidth={1}
+                        borderColor={PASS_COLOR}
+                        borderRadius="$md"
+                        p="$2.5"
+                      >
+                        <Text color={PASS_COLOR} fontSize="$xs" fontWeight="800">
+                          ✓ QR Scanned ({scannedKeyFormat}) — Enter Key Alias below and tap &quot;+ Add Key&quot;
+                        </Text>
+                      </Box>
+                    ) : null}
+
+                    <Input variant="outline" size="sm" borderColor={scannedKeyFormat && !keyName.trim() ? YELLOW : '#334155'}>
                       <InputField
                         value={keyName}
                         onChangeText={setKeyName}
-                        placeholder="Key alias (e.g. Master Verification Key)"
+                        placeholder="Enter Key alias (e.g. Master Verification Key) *"
                         placeholderTextColor="#64748b"
                         color="#f8fafc"
                       />
@@ -650,7 +892,7 @@ ${k.x5c[0]}
                       <InputField
                         value={keyValue}
                         onChangeText={setKeyValue}
-                        placeholder="Public key PEM (-----BEGIN PUBLIC KEY----- ...)"
+                        placeholder="Paste Clean Base64, Standard PEM, or JSON Key Bundle..."
                         placeholderTextColor="#64748b"
                         color="#f8fafc"
                         multiline
@@ -729,35 +971,300 @@ ${k.x5c[0]}
           ) : null}
 
           {/* ======================================================== */}
-          {/* TAB 3: NETWORK / API */}
+          {/* TAB 3: NETWORK / API & HTTPS ROOT CA */}
           {/* ======================================================== */}
           {activeTab === 'NETWORK' ? (
             <Box borderWidth={2} borderColor={YELLOW} borderRadius="$xl" bg={PANEL} p="$4">
-              <Text color="#f8fafc" fontSize="$lg" fontWeight="800" mb="$2">
-                Server API Configuration
-              </Text>
+              <HStack justifyContent="space-between" alignItems="center" mb="$1">
+                <Text color="#f8fafc" fontSize="$lg" fontWeight="800">
+                  Server API & HTTPS Root CA
+                </Text>
+                <Box
+                  bg={
+                    serverUrl.trim().toLowerCase().startsWith('https://')
+                      ? 'rgba(34, 197, 94, 0.2)'
+                      : 'rgba(250, 204, 21, 0.15)'
+                  }
+                  px="$2"
+                  py="$1"
+                  borderRadius="$sm"
+                  borderWidth={1}
+                  borderColor={
+                    serverUrl.trim().toLowerCase().startsWith('https://') ? PASS_COLOR : YELLOW
+                  }
+                >
+                  <Text
+                    color={
+                      serverUrl.trim().toLowerCase().startsWith('https://') ? PASS_COLOR : YELLOW
+                    }
+                    fontSize="$2xs"
+                    fontWeight="900"
+                  >
+                    {serverUrl.trim().toLowerCase().startsWith('https://') ? 'HTTPS TLS' : 'HTTP'}
+                  </Text>
+                </Box>
+              </HStack>
+
               <Text color={MUTED} fontSize="$xs" mb="$3">
-                Used at Checkout to transfer bulk scans and complete shifts.
+                Supports both <Text color={PASS_COLOR} fontWeight="700">https://</Text> and <Text color={YELLOW} fontWeight="700">http://</Text> endpoints. For self-signed or private HTTPS servers, paste or scan your Root CA certificate below.
               </Text>
-              <Input variant="outline" size="md" borderColor="#334155" mb="$3">
+
+              {/* Quick Protocol & Preset Switcher */}
+              <HStack space="xs" mb="$2" flexWrap="wrap">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  borderColor={PASS_COLOR}
+                  bg={serverUrl.trim().toLowerCase().startsWith('https://') ? 'rgba(34, 197, 94, 0.2)' : 'transparent'}
+                  onPress={() => {
+                    const stripped = serverUrl.trim().replace(/^https?:\/\//i, '');
+                    setServerUrl(`https://${stripped}`);
+                  }}
+                >
+                  <ButtonText color={PASS_COLOR} fontSize="$2xs" fontWeight="900">
+                    Use https://
+                  </ButtonText>
+                </Button>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  borderColor={YELLOW}
+                  bg={serverUrl.trim().toLowerCase().startsWith('http://') ? 'rgba(250, 204, 21, 0.15)' : 'transparent'}
+                  onPress={() => {
+                    const stripped = serverUrl.trim().replace(/^https?:\/\//i, '');
+                    setServerUrl(`http://${stripped}`);
+                  }}
+                >
+                  <ButtonText color={YELLOW} fontSize="$2xs" fontWeight="900">
+                    Use http://
+                  </ButtonText>
+                </Button>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  borderColor="#38bdf8"
+                  bg={serverUrl.includes('talhahub.io') ? 'rgba(56, 189, 248, 0.2)' : 'transparent'}
+                  onPress={() => {
+                    setServerUrl('https://veriflow.talhahub.io/api');
+                  }}
+                >
+                  <ButtonText color="#38bdf8" fontSize="$2xs" fontWeight="900">
+                    Preset: talhahub.io
+                  </ButtonText>
+                </Button>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  borderColor="#94a3b8"
+                  bg={serverUrl.includes('10.0.2.2') ? 'rgba(148, 163, 184, 0.2)' : 'transparent'}
+                  onPress={() => {
+                    setServerUrl('http://10.0.2.2:8000');
+                  }}
+                >
+                  <ButtonText color="#cbd5e1" fontSize="$2xs" fontWeight="900">
+                    Preset: 10.0.2.2
+                  </ButtonText>
+                </Button>
+              </HStack>
+
+              <Input variant="outline" size="md" borderColor="#334155" mb="$4">
                 <InputField
                   value={serverUrl}
                   onChangeText={setServerUrl}
-                  placeholder="http://10.0.2.2:8000"
+                  placeholder="https://veriflow.talhahub.io/api or http://10.0.2.2:8000"
                   placeholderTextColor="#64748b"
                   color="#f8fafc"
+                  autoCapitalize="none"
+                  autoCorrect={false}
                 />
               </Input>
+
+              {/* ROOT CA CERTIFICATE SECTION */}
+              <Box
+                bg={PANEL_ALT}
+                p="$3"
+                borderRadius="$lg"
+                borderWidth={1}
+                borderColor={rootCaCert ? PASS_COLOR : '#334155'}
+                mb="$4"
+              >
+                <HStack justifyContent="space-between" alignItems="center" mb="$2">
+                  <HStack space="xs" alignItems="center">
+                    <ShieldCheck size={16} color={rootCaCert ? PASS_COLOR : YELLOW} />
+                    <Text color="#f8fafc" fontSize="$sm" fontWeight="800">
+                      Root CA Certificate (HTTPS)
+                    </Text>
+                  </HStack>
+                  <Text
+                    color={rootCaCert ? PASS_COLOR : MUTED}
+                    fontSize="$2xs"
+                    fontWeight="900"
+                  >
+                    {rootCaCert ? 'CUSTOM CA ACTIVE' : 'SYSTEM CA ONLY'}
+                  </Text>
+                </HStack>
+
+                <Text color={MUTED} fontSize="$2xs" mb="$2.5">
+                  Scan or paste your Root CA certificate (<Text color={YELLOW}>-----BEGIN CERTIFICATE-----</Text>, Clean Base64, or JSON) so Android trusts your HTTPS server.
+                </Text>
+
+                <Button
+                  size="sm"
+                  bg={caQrScannerVisible ? YELLOW : 'rgba(250, 204, 21, 0.14)'}
+                  borderWidth={1}
+                  borderColor={YELLOW}
+                  mb="$2.5"
+                  onPress={() => {
+                    setCaScanLock(false);
+                    setIsKeyScannerTorchOn(false);
+                    setCaQrScannerVisible(prev => !prev);
+                  }}
+                >
+                  <HStack space="xs" alignItems="center">
+                    <QrCode size={15} color={caQrScannerVisible ? BLACK : YELLOW} />
+                    <ButtonText color={caQrScannerVisible ? BLACK : YELLOW} fontSize="$xs" fontWeight="900">
+                      {caQrScannerVisible
+                        ? 'Close Root CA QR Camera'
+                        : 'Scan Root CA QR (Auto-Detect JSON / Base64 / PEM)'}
+                    </ButtonText>
+                  </HStack>
+                </Button>
+
+                {caQrScannerVisible ? (
+                  <Box
+                    h={240}
+                    borderWidth={2}
+                    borderColor={YELLOW}
+                    borderRadius="$lg"
+                    overflow="hidden"
+                    bg="#050914"
+                    position="relative"
+                    mb="$2.5"
+                  >
+                    {permission?.granted ? (
+                      <CameraView
+                        style={StyleSheet.absoluteFill}
+                        facing="back"
+                        enableTorch={isKeyScannerTorchOn}
+                        barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                        onBarcodeScanned={caScanLock ? undefined : handleRootCaQrScanned}
+                      />
+                    ) : (
+                      <VStack flex={1} alignItems="center" justifyContent="center" px="$4">
+                        <Text color="#f8fafc" fontSize="$sm" fontWeight="800" textAlign="center">
+                          Camera permission is required to scan Root CA QR codes.
+                        </Text>
+                        <Button mt="$3" bg={YELLOW} size="sm" onPress={() => requestPermission()}>
+                          <ButtonText color={BLACK} fontWeight="800">
+                            Grant Camera Permission
+                          </ButtonText>
+                        </Button>
+                      </VStack>
+                    )}
+
+                    {permission?.granted ? (
+                      <Pressable
+                        position="absolute"
+                        top={12}
+                        right={12}
+                        zIndex={10}
+                        onPress={() => setIsKeyScannerTorchOn(prev => !prev)}
+                        bg={isKeyScannerTorchOn ? YELLOW : 'rgba(5, 9, 20, 0.75)'}
+                        p="$2"
+                        borderRadius="$md"
+                        borderWidth={1}
+                        borderColor={isKeyScannerTorchOn ? YELLOW : 'rgba(255, 255, 255, 0.3)'}
+                        alignItems="center"
+                        justifyContent="center"
+                      >
+                        {isKeyScannerTorchOn ? (
+                          <Flashlight size={18} color={BLACK} />
+                        ) : (
+                          <FlashlightOff size={18} color="#f8fafc" />
+                        )}
+                      </Pressable>
+                    ) : null}
+
+                    <View style={styles.reticleOverlay} pointerEvents="none">
+                      <View style={styles.reticleBox} />
+                    </View>
+                  </Box>
+                ) : null}
+
+                {scannedCaFormat ? (
+                  <Box
+                    bg="rgba(34, 197, 94, 0.15)"
+                    borderWidth={1}
+                    borderColor={PASS_COLOR}
+                    borderRadius="$md"
+                    p="$2"
+                    mb="$2"
+                  >
+                    <Text color={PASS_COLOR} fontSize="$2xs" fontWeight="800">
+                      ✓ Root CA QR Scanned ({scannedCaFormat}) — open the manager to review and Apply
+                    </Text>
+                  </Box>
+                ) : null}
+
+                <Text
+                  color={rootCaCert ? PASS_COLOR : rootCaInput.trim() ? YELLOW : MUTED}
+                  fontSize="$2xs"
+                  fontWeight="700"
+                  mb="$2"
+                >
+                  {rootCaCert
+                    ? '✓ Custom Root CA applied'
+                    : rootCaInput.trim()
+                    ? '• Draft pending — open manager and Apply'
+                    : '• No custom Root CA (system CAs only)'}
+                </Text>
+
+                <Button
+                  size="sm"
+                  bg={YELLOW}
+                  onPress={() => setRootCaModalVisible(true)}
+                >
+                  <ButtonText color={BLACK} fontSize="$xs" fontWeight="900">
+                    Manage Root CA Certificate
+                  </ButtonText>
+                </Button>
+              </Box>
+
               <Button
                 bg={YELLOW}
                 borderRadius="$md"
                 onPress={async () => {
-                  await setApiBaseUrl(serverUrl);
-                  Alert.alert('Saved', `API URL set to: ${serverUrl}`);
+                  try {
+                    const normalizedUrl = normalizeApiBaseUrl(serverUrl);
+                    if (!normalizedUrl) {
+                      Alert.alert('Invalid URL', 'Please enter a valid http:// or https:// Server API URL.');
+                      return;
+                    }
+                    await setApiBaseUrl(normalizedUrl);
+                    setServerUrl(normalizedUrl);
+                    let appliedToNative = false;
+                    if (rootCaInput.trim()) {
+                      appliedToNative = await setRootCaCert(rootCaInput.trim());
+                    } else {
+                      await setRootCaCert('');
+                    }
+                    setScannedCaFormat(null);
+                    const caStatusNote = rootCaInput.trim()
+                      ? appliedToNative
+                        ? '\n✓ Custom Root CA dynamically injected into Android TLS engine.'
+                        : '\n⚠️ CA saved. Since running in Expo Go without native hooks, install talhaRootCA.crt in Android OS (Settings -> Security -> Install Certificate -> CA certificate) or run custom APK.'
+                      : '';
+                    Alert.alert(
+                      'Configuration Saved',
+                      `API URL set to: ${normalizedUrl}${caStatusNote}`,
+                    );
+                  } catch (err: any) {
+                    Alert.alert('Root CA Error', err.message || 'Invalid Root CA certificate format.');
+                  }
                 }}
               >
                 <ButtonText color={BLACK} fontWeight="900">
-                  Save Configuration
+                  Save Server & Root CA Configuration
                 </ButtonText>
               </Button>
             </Box>
@@ -828,12 +1335,16 @@ ${k.x5c[0]}
                   variant="outline"
                   borderColor={YELLOW}
                   onPress={async () => {
-                    const ok = await refreshPermissions();
+                    const result = await refreshPermissions();
                     Alert.alert(
-                      ok ? 'Permissions Synced' : 'Sync Unavailable',
-                      ok
+                      result.ok
+                        ? 'Permissions Synced'
+                        : result.status === 401
+                        ? 'Shift Token Rejected'
+                        : 'Sync Unavailable',
+                      result.ok
                         ? 'Updated user permissions from server.'
-                        : 'Could not reach server. Using current token permissions.',
+                        : result.error || 'Could not reach server. Using current token permissions.',
                     );
                   }}
                 >
@@ -945,6 +1456,67 @@ ${k.x5c[0]}
           </Box>
         </View>
       </Modal>
+
+      {/* Root CA Manager Modal (large viewer/editor) */}
+      <RootCaModal
+        visible={rootCaModalVisible}
+        value={rootCaInput}
+        onChangeValue={setRootCaInput}
+        scannedFormat={scannedCaFormat}
+        appliedCa={rootCaCert}
+        onClose={() => setRootCaModalVisible(false)}
+        onScanQr={() => {
+          setRootCaModalVisible(false);
+          setCaScanLock(false);
+          setCaQrScannerVisible(true);
+        }}
+        onApply={async raw => {
+          await setRootCaCert(raw.trim());
+          setScannedCaFormat(null);
+          setRootCaModalVisible(false);
+          Alert.alert('Root CA Applied', 'Custom Root CA is now trusted for HTTPS connections.');
+        }}
+        onClear={async () => {
+          await setRootCaCert('');
+          setScannedCaFormat(null);
+        }}
+      />
+
+      {/* Public Key Manager & Import Modal (Separate QR Review & SQLite Storage) */}
+      <PublicKeyModal
+        visible={publicKeyModalVisible}
+        alias={keyName}
+        onChangeAlias={setKeyName}
+        value={keyValue}
+        onChangeValue={setKeyValue}
+        scannedFormat={scannedKeyFormat}
+        onClose={() => {
+          setPublicKeyModalVisible(false);
+          setScannedKeyFormat(null);
+        }}
+        onScanQr={() => {
+          setPublicKeyModalVisible(false);
+          setKeyScanLock(false);
+          setIsKeyScannerTorchOn(false);
+          setKeyQrScannerVisible(true);
+        }}
+        onSave={async (alias, pem) => {
+          if (!canCreateKeys) {
+            Alert.alert('Permission Denied', 'Your token lacks "keys.create" permission.');
+            return;
+          }
+          await addPublicKey(alias, pem);
+          setKeyName('');
+          setKeyValue('');
+          setScannedKeyFormat(null);
+          setPublicKeyModalVisible(false);
+          await refresh();
+          Alert.alert(
+            'Saved to Keystore',
+            `Public key "${alias}" successfully added to local SQLite keystore.`,
+          );
+        }}
+      />
     </ScrollView>
   );
 }
@@ -964,5 +1536,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 20,
+  },
+  reticleOverlay: {
+    ...StyleSheet.absoluteFill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reticleBox: {
+    width: 165,
+    height: 165,
+    borderWidth: 2,
+    borderColor: YELLOW,
+    borderRadius: 16,
+    borderStyle: 'dashed',
   },
 });

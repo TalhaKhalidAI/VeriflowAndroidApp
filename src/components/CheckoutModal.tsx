@@ -14,6 +14,7 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Modal, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { useAuth } from '../core/authContext';
 import { getPendingScans, markScansAsSynced, markScansAsFailed, setAppSetting } from '../core/db';
+import { buildApiUrl } from '../core/jwt';
 
 const BLACK = '#07111d';
 const PANEL = '#0f172a';
@@ -88,7 +89,7 @@ export function CheckoutModal({ visible, onClose }: CheckoutModalProps) {
           };
         });
 
-        const syncUrl = `${apiBaseUrl}/app/v1/scans/shifts/${session.shiftId}/sync`;
+        const syncUrl = buildApiUrl(apiBaseUrl, `/scans/shifts/${session.shiftId}/sync`);
         try {
           const syncRes = await fetch(syncUrl, {
             method: 'POST',
@@ -103,6 +104,20 @@ export function CheckoutModal({ visible, onClose }: CheckoutModalProps) {
             const errData = await syncRes.json().catch(() => ({}));
             const msg = errData.error || errData.detail || errData.message || `Scan transfer failed with status ${syncRes.status}`;
             await markScansAsFailed(pendingScans.map(s => s.id), msg);
+
+            // If token was rejected by server (expired, key rotated, or shift already ended)
+            if (
+              syncRes.status === 401 ||
+              msg.toLowerCase().includes('invalid token') ||
+              msg.toLowerCase().includes('expired')
+            ) {
+              setShiftOverNotice(
+                'Shift session has already ended or token is no longer active on the server. Local scans saved. Clearing local session...',
+              );
+              await clearOfflineCheckout();
+              return { transferredCount: 0, shiftAlreadyOver: true };
+            }
+
             throw new Error(msg);
           }
 
@@ -118,8 +133,8 @@ export function CheckoutModal({ visible, onClose }: CheckoutModalProps) {
         }
       }
 
-      // 3. Checkout Shift via POST /app/v1/shifts/{shift_id}/checkout
-      const checkoutUrl = `${apiBaseUrl}/app/v1/shifts/${session.shiftId}/checkout`;
+      // 3. Checkout Shift via POST /shifts/{shift_id}/checkout
+      const checkoutUrl = buildApiUrl(apiBaseUrl, `/shifts/${session.shiftId}/checkout`);
       let checkoutRes: Response | null = null;
       try {
         checkoutRes = await fetch(checkoutUrl, {
@@ -131,7 +146,7 @@ export function CheckoutModal({ visible, onClose }: CheckoutModalProps) {
 
         if (!checkoutRes.ok) {
           // Fallback to self-service checkout endpoint
-          checkoutRes = await fetch(`${apiBaseUrl}/app/v1/shifts/checkout`, {
+          checkoutRes = await fetch(buildApiUrl(apiBaseUrl, '/shifts/checkout'), {
             method: 'POST',
             headers: {
               Authorization: `Bearer ${session.token}`,
@@ -147,14 +162,21 @@ export function CheckoutModal({ visible, onClose }: CheckoutModalProps) {
         const errData = await checkoutRes.json().catch(() => ({}));
         const msg = String(errData.error || errData.detail || errData.message || '');
         
-        // Requirement 5: If shift is already over/completed on API, handle gracefully
+        // Handle already completed shift, expired token, or invalid/replaced token gracefully
         if (
           msg.toLowerCase().includes('already') ||
-          msg.toLowerCase().includes('status is \'completed\'') ||
+          msg.toLowerCase().includes("status is 'completed'") ||
           msg.toLowerCase().includes('completed') ||
-          msg.toLowerCase().includes('over')
+          msg.toLowerCase().includes('over') ||
+          msg.toLowerCase().includes('invalid token') ||
+          msg.toLowerCase().includes('expired') ||
+          checkoutRes.status === 401
         ) {
-          setShiftOverNotice('Shift has already ended on the server. Your data transfer has been verified.');
+          setShiftOverNotice(
+            msg.toLowerCase().includes('invalid token') || checkoutRes.status === 401
+              ? 'Shift session has already ended or token is no longer active on the server. Local session cleared.'
+              : 'Shift has already ended on the server. Your data transfer has been verified.'
+          );
           await clearOfflineCheckout();
           return { transferredCount: pendingScans.length, shiftAlreadyOver: true };
         }

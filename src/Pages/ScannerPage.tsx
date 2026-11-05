@@ -10,17 +10,25 @@ import {
   VStack,
 } from '@gluestack-ui/themed';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useFocusEffect } from 'expo-router';
 import { ShieldAlert, CheckCircle2, XCircle, SlidersHorizontal, Flashlight, FlashlightOff } from 'lucide-react-native';
-import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Modal, StyleSheet, View, useWindowDimensions } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Modal, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { useAuth } from '../core/authContext';
 import {
+  addPublicKey,
   addScanToQueue,
   getInventoryItems,
   getPublicKeys,
   isScanAlreadyInQueue,
 } from '../core/db';
-import { RuleCheck, verifyJwtAgainstPublicKey, extractJwtPayload } from '../core/jwt';
+import {
+  RuleCheck,
+  verifyJwtAgainstPublicKey,
+  extractJwtPayload,
+  isLikelyPublicKeyPayload,
+  parsePublicKeyPayload,
+} from '../core/jwt';
 import { InventoryRecord, PublicKeyRecord, UiMode, VerificationResult } from '../core/types';
 
 const BLACK = '#07111d';
@@ -47,6 +55,18 @@ export default function ScannerPage() {
   const [inventoryRules, setInventoryRules] = useState<InventoryRecord[]>([]);
   const [selectedRuleId, setSelectedRuleId] = useState<number | 'ALL' | null>(null);
   const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
+  const [isScreenFocused, setIsScreenFocused] = useState<boolean>(true);
+
+  useFocusEffect(
+    useCallback(() => {
+      setIsScreenFocused(true);
+      void loadData();
+      return () => {
+        setIsScreenFocused(false);
+        setIsTorchOn(false);
+      };
+    }, []),
+  );
 
   // Camera & Scan state
   const scanLockRef = React.useRef<boolean>(false);
@@ -91,6 +111,33 @@ export default function ScannerPage() {
     scanLockRef.current = true;
     setHasScanned(true);
     setIsVerifying(true);
+
+    // Auto-detect if scanned QR is a Public Key (JSON / Clean Base64 / PEM)
+    if (isLikelyPublicKeyPayload(data.trim())) {
+      if (!hasPermission('keys.create')) {
+        Alert.alert(
+          'Permission Denied',
+          'Scanned QR is a Public Key, but your shift token lacks "keys.create" permission.',
+        );
+      } else {
+        try {
+          const parsed = parsePublicKeyPayload(data.trim());
+          const insertedId = await addPublicKey(parsed.suggestedName, parsed.pem);
+          await loadData();
+          setSelectedKeyId(insertedId);
+          Alert.alert(
+            'Public Key Imported to Keystore',
+            `Saved "${parsed.suggestedName}" into local SQLite keystore and selected it for verification.\n\nAuto-Detected Format: ${parsed.detectedFormat}`,
+          );
+        } catch (e: any) {
+          Alert.alert('Invalid Key QR', e?.message || 'Could not parse scanned public key.');
+        }
+      }
+      setIsVerifying(false);
+      setHasScanned(false);
+      scanLockRef.current = false;
+      return;
+    }
 
     if (!selectedKey) {
       const errRes: VerificationResult = {
@@ -284,13 +331,15 @@ export default function ScannerPage() {
             position="relative"
           >
             {permission?.granted ? (
-              <CameraView
-                style={StyleSheet.absoluteFill}
-                facing="back"
-                enableTorch={isTorchOn}
-                barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-                onBarcodeScanned={isVerifying || hasScanned ? undefined : handleBarcodeScanned}
-              />
+              isScreenFocused ? (
+                <CameraView
+                  style={StyleSheet.absoluteFill}
+                  facing="back"
+                  enableTorch={isTorchOn}
+                  barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                  onBarcodeScanned={isVerifying || hasScanned ? undefined : handleBarcodeScanned}
+                />
+              ) : null
             ) : (
               <VStack flex={1} alignItems="center" justifyContent="center" px="$4">
                 <Text color="#f8fafc" textAlign="center" mb="$2">Camera permission required</Text>
