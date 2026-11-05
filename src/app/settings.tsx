@@ -1,5 +1,3 @@
-import SettingsPage from '@/Pages/SettingsPage';
+import SettingsPage from '../Pages/SettingsPage';
 
-export default function SettingsRoute() {
-  return <SettingsPage />;
-}
+export default SettingsPage;

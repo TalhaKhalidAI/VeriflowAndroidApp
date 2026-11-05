@@ -13,38 +13,48 @@ import {
 } from '@gluestack-ui/themed';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import {
-  RefreshCw,
-  DownloadCloud,
-  Key,
-  Check,
-  Settings,
   AlertCircle,
   AlertTriangle,
-  LogOut,
-  LogIn,
-  UploadCloud,
+  ChevronDown,
+  ChevronUp,
+  DownloadCloud,
   Flashlight,
   FlashlightOff,
+  Key,
+  LogIn,
+  LogOut,
   QrCode,
+  RefreshCw,
+  Server,
+  ShieldCheck,
 } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Image, Modal, StyleSheet, View, useWindowDimensions } from 'react-native';
-import { useAuth } from '../core/authContext';
-import { RootCaModal } from '../components/RootCaModal';
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  StyleSheet,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 import { PublicKeyModal } from '../components/PublicKeyModal';
+import { RootCaModal } from '../components/RootCaModal';
+import { useAuth } from '../core/authContext';
 import {
   addPublicKey,
-  getPublicKeys,
   getAppSetting,
-  setAppSetting,
   getPendingScans,
+  getPublicKeys,
   markScansAsSynced,
+  setAppSetting,
 } from '../core/db';
 import {
   buildApiUrl,
   isLikelyPublicKeyPayload,
   normalizeApiBaseUrl,
-  normalizePublicKey,
   parsePublicKeyPayload,
   parseRootCaPayload,
   verifyJwtAgainstPublicKey,
@@ -54,6 +64,7 @@ import { PublicKeyRecord } from '../core/types';
 const BLACK = '#07111d';
 const PANEL = '#0f172a';
 const PANEL_ALT = '#111c2e';
+const BORDER = '#1e293b';
 const YELLOW = '#facc15';
 const MUTED = '#94a3b8';
 const FAIL_COLOR = '#ef4444';
@@ -63,8 +74,8 @@ export default function LoginPage() {
   const { login, apiBaseUrl, setApiBaseUrl, rootCaCert, setRootCaCert } = useAuth();
   const [permission, requestPermission] = useCameraPermissions();
   const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
-  const { width, height } = useWindowDimensions();
-  const cameraBoxHeight = Math.min(280, Math.max(190, height * 0.33));
+  const { height } = useWindowDimensions();
+  const cameraBoxHeight = Math.min(290, Math.max(210, height * 0.32));
 
   const [publicKeys, setPublicKeys] = useState<PublicKeyRecord[]>([]);
   const [selectedKeyId, setSelectedKeyId] = useState<number | null>(null);
@@ -72,6 +83,8 @@ export default function LoginPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [scanCooldown, setScanCooldown] = useState<boolean>(true);
+  const [showConfigOptions, setShowConfigOptions] = useState<boolean>(false);
+
   const [completedShiftPrompt, setCompletedShiftPrompt] = useState<{
     token: string;
     payload: any;
@@ -126,7 +139,7 @@ export default function LoginPage() {
     setRootCaInput(rootCaCert);
   }, [rootCaCert]);
 
-  const selectedKey = publicKeys.find(k => k.id === selectedKeyId) || publicKeys[0] || null;
+  const selectedKey = publicKeys.find((k: PublicKeyRecord) => k.id === selectedKeyId) || publicKeys[0] || null;
 
   const loadKeys = async (): Promise<PublicKeyRecord[]> => {
     try {
@@ -163,9 +176,7 @@ export default function LoginPage() {
             const pem =
               k.public_key ||
               (k.x5c && k.x5c[0]
-                ? `-----BEGIN PUBLIC KEY-----
-${k.x5c[0]}
------END PUBLIC KEY-----`
+                ? `-----BEGIN PUBLIC KEY-----\n${k.x5c[0]}\n-----END PUBLIC KEY-----`
                 : null);
 
             if (pem) {
@@ -220,7 +231,7 @@ ${k.x5c[0]}
     try {
       const token = data.trim();
 
-      // Auto-detect if the operator scanned a Public Key QR (JSON / Clean Base64 / PEM) directly on the Check-In screen
+      // Auto-detect if the operator scanned a Public Key QR directly
       if (isLikelyPublicKeyPayload(token)) {
         const parsed = parsePublicKeyPayload(token, newKeyName);
         setNewKeyPem(parsed.pem);
@@ -267,7 +278,7 @@ ${k.x5c[0]}
         }
       }
 
-      // Handle Verification Failures with explicit Error Notifications
+      // Handle Verification Failures
       if (!result.valid || !result.payload) {
         const activeKeyName = keyToUse?.name || selectedKey?.name || 'Active Public Key';
 
@@ -284,7 +295,7 @@ ${k.x5c[0]}
           setErrorMessage(`Key Verification Failed: ${reason}`);
           Alert.alert(
             'Key Verification Failed',
-            `Failed to verify QR signature with "${activeKeyName}".\n\n${reason}\n\nTip: The key or certificate used to sign this token does not match your active verification key. Tap "Refetch Keys from API" or import the matching public key certificate.`,
+            `Failed to verify QR signature with "${activeKeyName}".\n\n${reason}\n\nTip: Tap "Refetch Keys from API" or import the matching public key certificate.`,
             [
               { text: 'Dismiss', style: 'cancel' },
               { text: 'Refetch Keys from API', onPress: () => void handleFetchServerKeys(false) },
@@ -293,11 +304,7 @@ ${k.x5c[0]}
         } else {
           const reason = result.reason || 'Invalid QR code or unverified token signature.';
           setErrorMessage(reason);
-          Alert.alert(
-            'Verification Error',
-            reason,
-            [{ text: 'Dismiss', style: 'cancel' }],
-          );
+          Alert.alert('Verification Error', reason, [{ text: 'Dismiss', style: 'cancel' }]);
         }
 
         setIsVerifying(false);
@@ -329,7 +336,6 @@ ${k.x5c[0]}
       let isTokenRejectedByServer = false;
 
       try {
-        // Step 1: Check if the user currently has an open active shift on the server
         const activeMeRes = await fetch(buildApiUrl(apiBaseUrl, '/shifts/active/me'), {
           headers: { Authorization: `Bearer ${token}` },
         }).catch(() => null);
@@ -346,7 +352,6 @@ ${k.x5c[0]}
           isOffline = true;
         }
 
-        // Step 2: If active/me didn't return an active shift, check the specific shift_id from badge QR
         if (!hasActiveServerShift && !isOffline && !isTokenRejectedByServer) {
           const shiftStatusRes = await fetch(buildApiUrl(apiBaseUrl, `/shifts/${payload.shift_id}`), {
             headers: { Authorization: `Bearer ${token}` },
@@ -376,7 +381,6 @@ ${k.x5c[0]}
         return;
       }
 
-      // If user has NO active shift on server AND the scanned badge shift is completed/revoked:
       if (!hasActiveServerShift && isServerCompleted) {
         setCompletedShiftPrompt({
           token,
@@ -389,8 +393,6 @@ ${k.x5c[0]}
         return;
       }
 
-      // Shift is active on server (or scanned offline).
-      // ALWAYS display options: Check Out / Logout OR Login & Continue with Shift!
       const offlineShiftId = await getAppSetting('offline_checkout_shift_id', '');
       const pendingScans = await getPendingScans(payload.user_id);
       const wasOfflineCheckout = offlineShiftId === effectiveShiftId;
@@ -430,7 +432,6 @@ ${k.x5c[0]}
     setErrorMessage(null);
     const prompt = activeShiftPrompt;
     try {
-      // If currently offline or if server is unreachable:
       if (prompt.isOffline) {
         await setAppSetting('offline_checkout_shift_id', prompt.shiftId);
         setActiveShiftPrompt(null);
@@ -443,7 +444,6 @@ ${k.x5c[0]}
       const pendingScans = await getPendingScans(prompt.payload.user_id);
       let transferredCount = 0;
 
-      // 1. Bulk sync pending scans if any
       if (pendingScans.length > 0) {
         const scansData = pendingScans.map(s => {
           let claims: Record<string, any> = {};
@@ -487,21 +487,16 @@ ${k.x5c[0]}
         }
       }
 
-      // 2. Checkout shift on API
       const checkoutUrl = buildApiUrl(apiBaseUrl, `/shifts/${prompt.shiftId}/checkout`);
       let checkoutRes = await fetch(checkoutUrl, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${prompt.token}`,
-        },
+        headers: { Authorization: `Bearer ${prompt.token}` },
       }).catch(() => null);
 
       if (!checkoutRes || !checkoutRes.ok) {
         checkoutRes = await fetch(buildApiUrl(apiBaseUrl, '/shifts/checkout'), {
           method: 'POST',
-          headers: {
-            Authorization: `Bearer ${prompt.token}`,
-          },
+          headers: { Authorization: `Bearer ${prompt.token}` },
         }).catch(() => null);
       }
 
@@ -510,8 +505,7 @@ ${k.x5c[0]}
       setSuccessMessage(
         `Shift #${prompt.shiftId.slice(0, 8)} successfully checked out on server!${transferredCount > 0 ? ` (${transferredCount} scans transferred)` : ''}`,
       );
-    } catch (err: any) {
-      // In case of network error during checkout, fallback to offline checkout
+    } catch {
       await setAppSetting('offline_checkout_shift_id', prompt.shiftId);
       setActiveShiftPrompt(null);
       setSuccessMessage(
@@ -541,8 +535,6 @@ ${k.x5c[0]}
 
       if (!startRes.ok) {
         if (startRes.status === 409) {
-          // 409 Conflict: Worker already has an active shift on server!
-          // Fetch their active shift via /active/me
           const activeMeRes = await fetch(buildApiUrl(apiBaseUrl, '/shifts/active/me'), {
             headers: { Authorization: `Bearer ${completedShiftPrompt.token}` },
           }).catch(() => null);
@@ -553,7 +545,6 @@ ${k.x5c[0]}
             if (activeData?.id) activeShiftId = activeData.id;
           }
 
-          // Switch to activeShiftPrompt so worker can Check Out or Resume!
           setCompletedShiftPrompt(null);
           setActiveShiftPrompt({
             token: completedShiftPrompt.token,
@@ -605,35 +596,6 @@ ${k.x5c[0]}
     }
   };
 
-  const handleSaveManualKey = async () => {
-    if (!newKeyName.trim()) {
-      Alert.alert('Key Alias Required', 'Please enter a Key Alias (name) before saving the key.');
-      return;
-    }
-    if (!newKeyPem.trim()) {
-      Alert.alert('Missing Key Certificate', 'Please paste or scan a Public Key (JSON, Base64, or PEM).');
-      return;
-    }
-    try {
-      const parsed = parsePublicKeyPayload(newKeyPem, newKeyName.trim());
-      const insertedId = await addPublicKey(newKeyName.trim(), parsed.pem);
-      await loadKeys();
-      setSelectedKeyId(insertedId);
-      setNewKeyName('');
-      setNewKeyPem('');
-      setScannedKeyFormat(null);
-      setAddKeyQrMode(false);
-      setAddKeyModalVisible(false);
-      setSuccessMessage(`Saved key "${newKeyName.trim()}" and selected it as Active Key!`);
-      Alert.alert(
-        'Key Saved to Keystore',
-        `Saved "${newKeyName.trim()}" into local SQLite keystore.`,
-      );
-    } catch (err: any) {
-      Alert.alert('Invalid Key Format', err.message || 'Could not parse public key.');
-    }
-  };
-
   const handleAddKeyQrScanned = async ({ data }: { data: string }) => {
     if (addKeyScanLock) return;
     setAddKeyScanLock(true);
@@ -651,10 +613,7 @@ ${k.x5c[0]}
         'Invalid Key QR',
         err.message || 'Scanned QR is not a valid Public Key (JSON, Base64, or PEM).',
         [
-          {
-            text: 'Scan Again',
-            onPress: () => setAddKeyScanLock(false),
-          },
+          { text: 'Scan Again', onPress: () => setAddKeyScanLock(false) },
           {
             text: 'Cancel',
             style: 'cancel',
@@ -679,7 +638,6 @@ ${k.x5c[0]}
       setRootCaInput(parsed.pem);
       setScannedCaFormat(parsed.detectedFormat);
     } catch {
-      // Show exactly what the scanner received so the user can inspect / fix it in the manager.
       setRootCaInput(data);
       setScannedCaFormat('Raw scan — needs review');
     }
@@ -688,178 +646,276 @@ ${k.x5c[0]}
   };
 
   return (
-    <Box flex={1} bg={BLACK} px="$4" py="$6" justifyContent="center">
-      <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }}>
-        <VStack space="lg" width="100%" maxWidth={540} alignSelf="center">
-          {/* Header */}
-          <HStack alignItems="center" space="md">
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      style={{ flex: 1, backgroundColor: BLACK }}
+    >
+      <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingVertical: 24 }}>
+        <VStack space="md" width="100%" maxWidth={540} alignSelf="center">
+          {/* A. Compact Branding Section */}
+          <HStack alignItems="center" space="md" mb="$1">
             <Image
               source={require('../assets/msi_white.png')}
-              style={{ width: 64, height: 56 }}
+              style={{ width: 42, height: 42 }}
               resizeMode="contain"
               accessibilityLabel="VeriFlow logo"
             />
-            <VStack space="xs" flex={1}>
-              <Heading size="2xl" color={YELLOW} fontWeight="900">
+            <VStack flex={1}>
+              <Text color={MUTED} fontSize="$2xs" fontWeight="800" letterSpacing={1.2}>
+                INDUSTRIAL VERIFICATION SYSTEM
+              </Text>
+              <Heading size="lg" color="#f8fafc" fontWeight="900" mt="$0.5">
                 Operator Check-In
               </Heading>
-              <Text fontSize="$sm" color={MUTED}>
-                Scan your assigned RS256 shift QR token to access VeriFlow
+              <Text fontSize="$xs" color={MUTED} mt="$0.5">
+                Scan your assigned shift QR code to access VeriFlow.
               </Text>
             </VStack>
           </HStack>
 
-          {/* Key Selection Card */}
-          <Box borderWidth={2} borderColor={YELLOW} borderRadius="$xl" bg={PANEL} p="$4">
-            <HStack justifyContent="space-between" alignItems="center" mb="$2">
-              <Text color="#f8fafc" fontSize="$xs" fontWeight="800" letterSpacing={1}>
-                ACTIVE PUBLIC KEY FOR LOGIN
-              </Text>
-
-              {/* Quick Re-fetch from API button */}
-              <Pressable
-                onPress={() => handleFetchServerKeys(false)}
-                disabled={isFetchingServerKeys}
-                style={styles.refreshBadge}
-              >
-                <RefreshCw
-                  size={12}
-                  color={YELLOW}
-                  style={isFetchingServerKeys ? { transform: [{ rotate: '45deg' }] } : undefined}
-                />
-                <Text color={YELLOW} fontSize="$2xs" fontWeight="900" ml="$1">
-                  {isFetchingServerKeys ? 'Syncing...' : 'Refetch from API'}
-                </Text>
-              </Pressable>
-            </HStack>
-
-            <Pressable onPress={() => setKeyPickerVisible(true)}>
-              <Box
-                bg={PANEL_ALT}
-                borderWidth={1}
-                borderColor="#334155"
-                borderRadius="$lg"
-                px="$3"
-                py="$3"
-                flexDirection="row"
-                justifyContent="space-between"
-                alignItems="center"
-              >
-                <VStack flex={1} mr="$2">
-                  <Text color="#f8fafc" fontSize="$md" fontWeight="700" numberOfLines={1}>
-                    {selectedKey ? selectedKey.name : 'No Key Selected (Tap to choose or refetch)'}
-                  </Text>
-                  {selectedKey ? (
-                    <Text color={MUTED} fontSize="$xs" numberOfLines={1}>
-                      {selectedKey.public_key_string.slice(0, 48)}...
-                    </Text>
-                  ) : (
-                    <Text color={YELLOW} fontSize="$2xs">
-                      Tap &quot;Refetch from API&quot; to auto-download keys
-                    </Text>
-                  )}
-                </VStack>
-                <Text color={YELLOW} fontSize="$xl" fontWeight="900">
-                  ⌄
-                </Text>
-              </Box>
-            </Pressable>
-
-            {/* Bottom Key Buttons */}
-            <HStack space="xs" mt="$3">
-              <Button
-                flex={1}
-                size="sm"
-                variant="outline"
-                borderColor={YELLOW}
-                bg="rgba(250, 204, 21, 0.08)"
-                onPress={() => {
-                  setAddKeyModalVisible(true);
-                }}
-              >
-                <HStack space="xs" alignItems="center">
-                  <Key size={13} color={YELLOW} />
-                  <ButtonText color={YELLOW} fontSize="$2xs" fontWeight="900">
-                    Import / Manage Key
-                  </ButtonText>
-                </HStack>
-              </Button>
-
-              <Button
-                flex={1}
-                size="sm"
-                variant="outline"
-                borderColor={YELLOW}
-                bg={addKeyQrMode ? YELLOW : 'rgba(250, 204, 21, 0.14)'}
-                onPress={() => {
-                  setAddKeyScanLock(false);
-                  setErrorMessage(null);
-                  setAddKeyQrMode(prev => !prev);
-                }}
-              >
-                <HStack space="xs" alignItems="center">
-                  <QrCode size={13} color={addKeyQrMode ? BLACK : YELLOW} />
-                  <ButtonText color={addKeyQrMode ? BLACK : YELLOW} fontSize="$2xs" fontWeight="900">
-                    {addKeyQrMode ? 'Key QR Mode ON' : 'Scan Key QR'}
-                  </ButtonText>
-                </HStack>
-              </Button>
-
-              <Button
-                flex={1}
-                size="sm"
-                variant="outline"
-                borderColor={YELLOW}
-                onPress={() => handleFetchServerKeys(false)}
-                isDisabled={isFetchingServerKeys}
-              >
-                {isFetchingServerKeys ? (
-                  <ActivityIndicator size="small" color={YELLOW} />
-                ) : (
-                  <HStack space="xs" alignItems="center">
-                    <DownloadCloud size={13} color={YELLOW} />
-                    <ButtonText color={YELLOW} fontSize="$2xs" fontWeight="800">
-                      Refetch API
-                    </ButtonText>
-                  </HStack>
-                )}
-              </Button>
-            </HStack>
-
-            {/* Current Server API endpoint link */}
-            <HStack justifyContent="space-between" alignItems="center" mt="$2">
-              <Text color={rootCaCert ? PASS_COLOR : MUTED} fontSize="$2xs" fontWeight="700">
-                {rootCaCert ? '• Custom Root CA Active' : '• System TLS CA'}
-              </Text>
-              <Pressable onPress={() => setServerModalVisible(true)}>
-                <Text color={MUTED} fontSize="$2xs">
-                  Server API: <Text color={YELLOW} fontWeight="700">{apiBaseUrl}</Text> (Tap to configure)
-                </Text>
-              </Pressable>
-            </HStack>
-          </Box>
-
-          {/* Camera QR Scanner (Handles Shift Badge QR, Public Key QR, and Root CA QR inline on main surface) */}
+          {/* B. Authentication Readiness Card */}
           <Box
-            borderWidth={2}
-            borderColor={rootCaQrMode ? PASS_COLOR : addKeyQrMode ? '#38bdf8' : YELLOW}
-            borderRadius="$xl"
             bg={PANEL}
-            p="$4"
+            borderRadius="$xl"
+            borderWidth={1}
+            borderColor={BORDER}
+            p="$3.5"
           >
             <HStack justifyContent="space-between" alignItems="center" mb="$2">
-              <Text
-                color={rootCaQrMode ? PASS_COLOR : addKeyQrMode ? '#38bdf8' : '#f8fafc'}
-                fontSize="$sm"
-                fontWeight="800"
-                letterSpacing={1}
+              <VStack flex={1} mr="$2">
+                <Text color={MUTED} fontSize="$2xs" fontWeight="800" letterSpacing={0.5}>
+                  ACTIVE LOGIN KEY
+                </Text>
+                <Text color="#f8fafc" fontSize="$sm" fontWeight="800" numberOfLines={1}>
+                  {selectedKey ? selectedKey.name : 'No Key Selected'}
+                </Text>
+              </VStack>
+
+              <Pressable
+                onPress={() => setKeyPickerVisible(true)}
+                style={styles.changeKeyBadge}
               >
-                {rootCaQrMode
-                  ? 'SCAN ROOT CA CERTIFICATE QR'
-                  : addKeyQrMode
-                  ? 'SCAN PUBLIC KEY QR (JSON / BASE64 / PEM)'
-                  : 'SCAN SHIFT QR CODE'}
-              </Text>
+                <HStack space="2xs" alignItems="center">
+                  <Text color={YELLOW} fontSize="$2xs" fontWeight="900">
+                    Change Key
+                  </Text>
+                  <ChevronDown size={12} color={YELLOW} />
+                </HStack>
+              </Pressable>
+            </HStack>
+
+            {/* Status Indicators Row */}
+            <HStack space="xs" flexWrap="wrap" pt="$1" borderTopWidth={1} borderTopColor="#1e293b">
+              {/* Public Key Status */}
+              <Box
+                bg={selectedKey ? 'rgba(34, 197, 94, 0.12)' : 'rgba(239, 68, 68, 0.12)'}
+                px="$2"
+                py="$0.5"
+                borderRadius="$full"
+                borderWidth={1}
+                borderColor={selectedKey ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)'}
+                mr="$1"
+                mb="$1"
+              >
+                <HStack space="2xs" alignItems="center">
+                  <Box
+                    w={6}
+                    h={6}
+                    borderRadius="$full"
+                    bg={selectedKey ? PASS_COLOR : FAIL_COLOR}
+                  />
+                  <Text
+                    color={selectedKey ? PASS_COLOR : FAIL_COLOR}
+                    fontSize="$2xs"
+                    fontWeight="800"
+                  >
+                    Public Key: {selectedKey ? 'Available' : 'Missing'}
+                  </Text>
+                </HStack>
+              </Box>
+
+              {/* Root CA Status */}
+              <Box
+                bg={rootCaCert ? 'rgba(34, 197, 94, 0.12)' : 'rgba(148, 163, 184, 0.1)'}
+                px="$2"
+                py="$0.5"
+                borderRadius="$full"
+                borderWidth={1}
+                borderColor={rootCaCert ? 'rgba(34, 197, 94, 0.3)' : '#334155'}
+                mr="$1"
+                mb="$1"
+              >
+                <HStack space="2xs" alignItems="center">
+                  <Box
+                    w={6}
+                    h={6}
+                    borderRadius="$full"
+                    bg={rootCaCert ? PASS_COLOR : MUTED}
+                  />
+                  <Text
+                    color={rootCaCert ? PASS_COLOR : MUTED}
+                    fontSize="$2xs"
+                    fontWeight="800"
+                  >
+                    Root CA: {rootCaCert ? 'Custom Active' : 'System Only'}
+                  </Text>
+                </HStack>
+              </Box>
+
+              {/* Server Endpoint */}
+              <Box
+                bg="rgba(250, 204, 21, 0.1)"
+                px="$2"
+                py="$0.5"
+                borderRadius="$full"
+                borderWidth={1}
+                borderColor="rgba(250, 204, 21, 0.25)"
+                mb="$1"
+              >
+                <HStack space="2xs" alignItems="center">
+                  <Box w={6} h={6} borderRadius="$full" bg={YELLOW} />
+                  <Text color={YELLOW} fontSize="$2xs" fontWeight="800">
+                    Server: Ready
+                  </Text>
+                </HStack>
+              </Box>
+            </HStack>
+
+            {/* C. Secondary Configuration Actions (Accordion / Expandable) */}
+            <Pressable
+              onPress={() => setShowConfigOptions((prev: boolean) => !prev)}
+              style={styles.expandToggle}
+            >
+              <HStack justifyContent="space-between" alignItems="center">
+                <Text color={MUTED} fontSize="$2xs" fontWeight="700">
+                  {showConfigOptions ? 'Hide Key & Server Options' : 'Configuration & Keystore Options'}
+                </Text>
+                {showConfigOptions ? (
+                  <ChevronUp size={14} color={MUTED} />
+                ) : (
+                  <ChevronDown size={14} color={MUTED} />
+                )}
+              </HStack>
+            </Pressable>
+
+            {showConfigOptions && (
+              <VStack space="xs" mt="$2" pt="$2" borderTopWidth={1} borderTopColor="#1e293b">
+                <HStack space="xs">
+                  <Button
+                    flex={1}
+                    size="xs"
+                    variant="outline"
+                    borderColor="#334155"
+                    bg={PANEL_ALT}
+                    h={38}
+                    onPress={() => setAddKeyModalVisible(true)}
+                  >
+                    <HStack space="xs" alignItems="center">
+                      <Key size={13} color={YELLOW} />
+                      <ButtonText color="#cbd5e1" fontSize="$2xs" fontWeight="700">
+                        Import Key
+                      </ButtonText>
+                    </HStack>
+                  </Button>
+
+                  <Button
+                    flex={1}
+                    size="xs"
+                    variant="outline"
+                    borderColor={addKeyQrMode ? YELLOW : '#334155'}
+                    bg={addKeyQrMode ? 'rgba(250, 204, 21, 0.18)' : PANEL_ALT}
+                    h={38}
+                    onPress={() => {
+                      setAddKeyScanLock(false);
+                      setErrorMessage(null);
+                      setAddKeyQrMode((prev: boolean) => !prev);
+                    }}
+                  >
+                    <HStack space="xs" alignItems="center">
+                      <QrCode size={13} color={addKeyQrMode ? YELLOW : MUTED} />
+                      <ButtonText color={addKeyQrMode ? YELLOW : '#cbd5e1'} fontSize="$2xs" fontWeight="700">
+                        {addKeyQrMode ? 'Cancel QR' : 'Scan Key QR'}
+                      </ButtonText>
+                    </HStack>
+                  </Button>
+                </HStack>
+
+                <HStack space="xs">
+                  <Button
+                    flex={1}
+                    size="xs"
+                    variant="outline"
+                    borderColor="#334155"
+                    bg={PANEL_ALT}
+                    h={38}
+                    onPress={() => handleFetchServerKeys(false)}
+                    isDisabled={isFetchingServerKeys}
+                  >
+                    {isFetchingServerKeys ? (
+                      <ActivityIndicator size="small" color={YELLOW} />
+                    ) : (
+                      <HStack space="xs" alignItems="center">
+                        <DownloadCloud size={13} color={YELLOW} />
+                        <ButtonText color="#cbd5e1" fontSize="$2xs" fontWeight="700">
+                          Refetch Keys
+                        </ButtonText>
+                      </HStack>
+                    )}
+                  </Button>
+
+                  <Button
+                    flex={1}
+                    size="xs"
+                    variant="outline"
+                    borderColor="#334155"
+                    bg={PANEL_ALT}
+                    h={38}
+                    onPress={() => setServerModalVisible(true)}
+                  >
+                    <HStack space="xs" alignItems="center">
+                      <Server size={13} color={YELLOW} />
+                      <ButtonText color="#cbd5e1" fontSize="$2xs" fontWeight="700">
+                        Server API
+                      </ButtonText>
+                    </HStack>
+                  </Button>
+                </HStack>
+
+                {/* Subtitle with active URL */}
+                <Text color="#64748b" fontSize="$2xs" textAlign="center" mt="$1">
+                  API: {apiBaseUrl}
+                </Text>
+              </VStack>
+            )}
+          </Box>
+
+          {/* D. Primary QR Camera View */}
+          <Box
+            borderRadius="$xl"
+            bg={PANEL}
+            borderWidth={1}
+            borderColor={
+              rootCaQrMode
+                ? PASS_COLOR
+                : addKeyQrMode
+                ? '#38bdf8'
+                : errorMessage
+                ? FAIL_COLOR
+                : BORDER
+            }
+            p="$3.5"
+          >
+            <HStack justifyContent="space-between" alignItems="center" mb="$2">
+              <HStack space="xs" alignItems="center">
+                <Text color="#f8fafc" fontSize="$sm" fontWeight="800" letterSpacing={0.5}>
+                  {rootCaQrMode
+                    ? 'SCAN ROOT CA CERTIFICATE'
+                    : addKeyQrMode
+                    ? 'SCAN PUBLIC KEY QR'
+                    : 'Scan Shift QR Code'}
+                </Text>
+              </HStack>
+
               {addKeyQrMode || rootCaQrMode ? (
                 <Pressable
                   onPress={() => {
@@ -868,42 +924,36 @@ ${k.x5c[0]}
                     setRootCaQrMode(false);
                     setRootCaScanLock(false);
                   }}
+                  style={styles.cancelModeBadge}
                 >
-                  <Text color={YELLOW} fontSize="$2xs" fontWeight="900">
-                    Switch to Shift Scan ✕
+                  <Text color={YELLOW} fontSize="$2xs" fontWeight="800">
+                    ✕ Shift Mode
                   </Text>
                 </Pressable>
               ) : null}
             </HStack>
 
-            {addKeyQrMode ? (
-              <Input variant="outline" size="sm" borderColor="#334155" mb="$2.5">
+            {addKeyQrMode && (
+              <Input variant="outline" size="sm" borderColor="#334155" mb="$2">
                 <InputField
                   value={newKeyName}
                   onChangeText={setNewKeyName}
-                  placeholder="Optional Key Alias (auto-filled if JSON QR has kid)"
+                  placeholder="Key alias (optional, auto-detected from QR)"
                   placeholderTextColor="#64748b"
                   color="#f8fafc"
                 />
               </Input>
-            ) : null}
+            )}
 
+            {/* Camera Viewport Container */}
             <Box
               h={cameraBoxHeight}
-              borderWidth={2}
-              borderColor={
-                errorMessage
-                  ? FAIL_COLOR
-                  : rootCaQrMode
-                  ? PASS_COLOR
-                  : addKeyQrMode
-                  ? '#38bdf8'
-                  : YELLOW
-              }
               borderRadius="$lg"
               overflow="hidden"
               bg="#050914"
               position="relative"
+              borderWidth={1}
+              borderColor="#334155"
             >
               {permission?.granted ? (
                 <CameraView
@@ -930,8 +980,8 @@ ${k.x5c[0]}
                 />
               ) : (
                 <VStack flex={1} alignItems="center" justifyContent="center" px="$4">
-                  <Text color="#f8fafc" fontSize="$md" fontWeight="800" textAlign="center">
-                    Camera permission is required to scan your login QR.
+                  <Text color="#f8fafc" fontSize="$sm" fontWeight="800" textAlign="center">
+                    Camera permission required to scan badge.
                   </Text>
                   <Button
                     mt="$3"
@@ -940,259 +990,296 @@ ${k.x5c[0]}
                     onPress={() => requestPermission()}
                   >
                     <ButtonText color={BLACK} fontWeight="800">
-                      Grant Camera Permission
+                      Grant Permission
                     </ButtonText>
                   </Button>
                 </VStack>
               )}
 
+              {/* Torch Toggle */}
               {permission?.granted && (
                 <Pressable
                   position="absolute"
-                  top={12}
-                  right={12}
+                  top={10}
+                  right={10}
                   zIndex={10}
-                  onPress={() => setIsTorchOn(prev => !prev)}
-                  bg={isTorchOn ? YELLOW : "rgba(5, 9, 20, 0.75)"}
-                  p=".5"
-                  borderRadius=""
+                  onPress={() => setIsTorchOn((prev: boolean) => !prev)}
+                  bg={isTorchOn ? YELLOW : 'rgba(5, 9, 20, 0.75)'}
+                  p="$2"
+                  borderRadius="$md"
                   borderWidth={1}
-                  borderColor={isTorchOn ? YELLOW : "rgba(255, 255, 255, 0.3)"}
+                  borderColor={isTorchOn ? YELLOW : 'rgba(255, 255, 255, 0.2)'}
                   alignItems="center"
                   justifyContent="center"
                 >
                   {isTorchOn ? (
-                    <Flashlight size={20} color={BLACK} />
+                    <Flashlight size={16} color={BLACK} />
                   ) : (
-                    <FlashlightOff size={20} color="#f8fafc" />
+                    <FlashlightOff size={16} color="#f8fafc" />
                   )}
                 </Pressable>
               )}
 
-              {/* Aiming Reticle Overlay */}
+              {/* Aiming Reticle Frame */}
               <View style={styles.reticleOverlay} pointerEvents="none">
-                <View style={styles.reticleBox} />
+                <View style={styles.reticleBox}>
+                  {/* Corner brackets */}
+                  <View style={[styles.corner, styles.cornerTL]} />
+                  <View style={[styles.corner, styles.cornerTR]} />
+                  <View style={[styles.corner, styles.cornerBL]} />
+                  <View style={[styles.corner, styles.cornerBR]} />
+                </View>
               </View>
 
-              {isVerifying ? (
+              {/* Verification Loading Overlay */}
+              {isVerifying && (
                 <Box
                   position="absolute"
                   top={0}
                   left={0}
                   right={0}
                   bottom={0}
-                  bg="rgba(5, 9, 20, 0.75)"
+                  bg="rgba(5, 9, 20, 0.85)"
                   alignItems="center"
                   justifyContent="center"
                 >
                   <ActivityIndicator size="large" color={YELLOW} />
-                  <Text color={YELLOW} fontWeight="800" mt="$2">
+                  <Text color={YELLOW} fontWeight="800" mt="$2" fontSize="$xs">
                     Verifying RS256 Signature...
                   </Text>
                 </Box>
-              ) : null}
+              )}
             </Box>
 
-            {activeShiftPrompt ? (
-              <Box
-                bg="rgba(15, 23, 42, 0.98)"
-                borderWidth={2}
-                borderColor={activeShiftPrompt.isOffline ? '#f97316' : YELLOW}
-                borderRadius="$xl"
-                p="$4"
-                mt="$3"
-              >
-                <HStack justifyContent="space-between" alignItems="center">
-                  <HStack space="xs" alignItems="center">
-                    <AlertCircle size={18} color={activeShiftPrompt.isOffline ? '#f97316' : YELLOW} />
-                    <Heading size="xs" color={activeShiftPrompt.isOffline ? '#f97316' : YELLOW} fontWeight="900" letterSpacing={0.5}>
-                      {activeShiftPrompt.isOffline ? 'OFFLINE SHIFT DETECTED' : 'ACTIVE SHIFT DETECTED'}
-                    </Heading>
-                  </HStack>
+            <Text color={MUTED} fontSize="$xs" textAlign="center" mt="$2.5">
+              Align your shift badge QR code inside the frame.
+            </Text>
+          </Box>
 
-                  <Box
-                    bg={activeShiftPrompt.isOffline ? 'rgba(249, 115, 22, 0.2)' : 'rgba(34, 197, 94, 0.2)'}
-                    px="$2"
-                    py="$0.5"
-                    borderRadius="$sm"
-                  >
-                    <Text
-                      color={activeShiftPrompt.isOffline ? '#f97316' : '#22c55e'}
-                      fontSize="$2xs"
-                      fontWeight="800"
-                    >
-                      {activeShiftPrompt.isOffline ? 'OFFLINE' : 'ONLINE'}
-                    </Text>
-                  </Box>
+          {/* E. Authentication States & Prompts */}
+
+          {/* Active Shift Detected Prompt */}
+          {activeShiftPrompt && (
+            <Box
+              bg={PANEL}
+              borderWidth={1}
+              borderColor={activeShiftPrompt.isOffline ? '#f97316' : YELLOW}
+              borderLeftWidth={4}
+              borderLeftColor={activeShiftPrompt.isOffline ? '#f97316' : YELLOW}
+              borderRadius="$xl"
+              p="$4"
+            >
+              <HStack justifyContent="space-between" alignItems="center">
+                <HStack space="xs" alignItems="center">
+                  <AlertCircle size={16} color={activeShiftPrompt.isOffline ? '#f97316' : YELLOW} />
+                  <Heading size="xs" color={activeShiftPrompt.isOffline ? '#f97316' : YELLOW} fontWeight="900" letterSpacing={0.5}>
+                    {activeShiftPrompt.isOffline ? 'OFFLINE SHIFT DETECTED' : 'ACTIVE SHIFT DETECTED'}
+                  </Heading>
                 </HStack>
 
-                <Text color="#f8fafc" fontSize="$xs" fontWeight="700" mt="$2">
-                  Operator: <Text color={YELLOW} fontWeight="900">{activeShiftPrompt.operator}</Text> (Shift #{activeShiftPrompt.shiftId.slice(0, 8)})
-                </Text>
-
-                <Text color="#cbd5e1" fontSize="$xs" mt="$1" lineHeight={18}>
-                  {activeShiftPrompt.isOffline
-                    ? 'Server is unreachable (offline mode).'
-                    : activeShiftPrompt.wasOfflineCheckout
-                    ? 'You previously performed an Offline Checkout for this shift.'
-                    : 'This shift is currently active and logged in.'}
-                  {activeShiftPrompt.pendingScansCount > 0
-                    ? ` Found ${activeShiftPrompt.pendingScansCount} local scan record(s) pending transfer.`
-                    : ''}
-                </Text>
-
-                <Text color={MUTED} fontSize="$2xs" mt="$1.5">
-                  Would you like to check out and end this shift, or log in and continue working?
-                </Text>
-
-                <VStack space="xs" mt="$3.5">
-                  <HStack space="xs">
-                    <Button
-                      flex={1}
-                      size="sm"
-                      variant="outline"
-                      borderColor="#ef4444"
-                      bg="rgba(239, 68, 68, 0.15)"
-                      onPress={handleCompleteServerCheckout}
-                      isDisabled={isProcessingCheckout}
-                    >
-                      {isProcessingCheckout ? (
-                        <ActivityIndicator size="small" color="#ef4444" />
-                      ) : (
-                        <HStack space="xs" alignItems="center">
-                          <LogOut size={13} color="#ef4444" />
-                          <ButtonText color="#ef4444" fontSize="$xs" fontWeight="900">
-                            {activeShiftPrompt.isOffline ? 'Offline Check Out' : 'Check Out Shift'}
-                          </ButtonText>
-                        </HStack>
-                      )}
-                    </Button>
-
-                    <Button
-                      flex={1}
-                      size="sm"
-                      bg={YELLOW}
-                      onPress={handleResumeShift}
-                      isDisabled={isProcessingCheckout}
-                    >
-                      <HStack space="xs" alignItems="center">
-                        <LogIn size={13} color={BLACK} />
-                        <ButtonText color={BLACK} fontSize="$xs" fontWeight="900">
-                          Login & Continue
-                        </ButtonText>
-                      </HStack>
-                    </Button>
-                  </HStack>
-
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    borderColor="#475569"
-                    onPress={() => setActiveShiftPrompt(null)}
-                    isDisabled={isProcessingCheckout}
+                <Box
+                  bg={activeShiftPrompt.isOffline ? 'rgba(249, 115, 22, 0.2)' : 'rgba(34, 197, 94, 0.2)'}
+                  px="$2"
+                  py="$0.5"
+                  borderRadius="$sm"
+                >
+                  <Text
+                    color={activeShiftPrompt.isOffline ? '#f97316' : PASS_COLOR}
+                    fontSize="$2xs"
+                    fontWeight="800"
                   >
-                    <ButtonText color="#94a3b8" fontSize="$2xs">
-                      Dismiss / Scan Other Badge
-                    </ButtonText>
-                  </Button>
-                </VStack>
-              </Box>
-            ) : null}
+                    {activeShiftPrompt.isOffline ? 'OFFLINE' : 'ONLINE'}
+                  </Text>
+                </Box>
+              </HStack>
 
-            {completedShiftPrompt ? (
-              <Box bg="rgba(234, 179, 8, 0.15)" borderWidth={1} borderColor={YELLOW} borderRadius="$xl" p="$3" mt="$3">
-                <Text color={YELLOW} fontWeight="900" fontSize="$sm">
-                  Shift #{completedShiftPrompt.shiftId.slice(0, 8)} Has Ended
-                </Text>
-                <Text color="#cbd5e1" fontSize="$xs" mt="$1">
-                  Operator {completedShiftPrompt.operator} has already checked out of this shift.
-                </Text>
-                <HStack space="xs" mt="$3">
-                  <Button
-                    flex={1}
-                    size="sm"
-                    variant="outline"
-                    borderColor="#64748b"
-                    onPress={() => setCompletedShiftPrompt(null)}
-                  >
-                    <ButtonText color="#cbd5e1">Dismiss</ButtonText>
-                  </Button>
-                  <Button
-                    flex={2}
-                    size="sm"
-                    bg={YELLOW}
-                    onPress={handleStartNewShift}
-                    isDisabled={isStartingNewShift}
-                  >
-                    <ButtonText color={BLACK} fontWeight="900">
-                      {isStartingNewShift ? 'Starting...' : 'Start New Shift'}
-                    </ButtonText>
-                  </Button>
-                </HStack>
-              </Box>
-            ) : null}
+              <Text color="#f8fafc" fontSize="$xs" fontWeight="700" mt="$2">
+                Operator: <Text color={YELLOW} fontWeight="900">{activeShiftPrompt.operator}</Text> · Shift #{activeShiftPrompt.shiftId.slice(0, 8)}
+              </Text>
 
-            {errorMessage ? (
-              <Box
-                bg="rgba(239, 68, 68, 0.15)"
-                borderWidth={2}
-                borderColor={FAIL_COLOR}
-                borderRadius="$xl"
-                p="$3.5"
-                mt="$3"
-              >
-                <HStack justifyContent="space-between" alignItems="center">
-                  <HStack space="xs" alignItems="center" flex={1}>
-                    <AlertTriangle size={18} color={FAIL_COLOR} />
-                    <Heading size="xs" color={FAIL_COLOR} fontWeight="900" letterSpacing={0.5}>
-                      {errorMessage.toLowerCase().includes('expired')
-                        ? 'SHIFT BADGE EXPIRED'
-                        : errorMessage.toLowerCase().includes('key') || errorMessage.toLowerCase().includes('signature') || errorMessage.toLowerCase().includes('certificate')
-                        ? 'KEY VERIFICATION FAILED'
-                        : 'VERIFICATION ERROR'}
-                    </Heading>
-                  </HStack>
-                  <Pressable onPress={() => setErrorMessage(null)} p="$1">
-                    <Text color="#94a3b8" fontSize="$xs" fontWeight="900">✕</Text>
-                  </Pressable>
-                </HStack>
+              <Text color="#cbd5e1" fontSize="$xs" mt="$1" lineHeight={18}>
+                {activeShiftPrompt.isOffline
+                  ? 'Server unreachable (offline mode).'
+                  : activeShiftPrompt.wasOfflineCheckout
+                  ? 'Previously checked out offline on this device.'
+                  : 'This shift is currently open on the server.'}
+                {activeShiftPrompt.pendingScansCount > 0
+                  ? ` Found ${activeShiftPrompt.pendingScansCount} local scan record(s) pending sync.`
+                  : ''}
+              </Text>
 
-                <Text color="#fca5a5" fontSize="$xs" fontWeight="600" mt="$1.5" lineHeight={18}>
-                  {errorMessage}
-                </Text>
-
-                {errorMessage.toLowerCase().includes('key') || errorMessage.toLowerCase().includes('signature') || errorMessage.toLowerCase().includes('certificate') ? (
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    borderColor={YELLOW}
-                    bg="rgba(250, 204, 21, 0.1)"
-                    mt="$2.5"
-                    onPress={() => void handleFetchServerKeys(false)}
-                  >
+              <HStack space="xs" mt="$3">
+                <Button
+                  flex={1}
+                  size="sm"
+                  variant="outline"
+                  borderColor={FAIL_COLOR}
+                  bg="rgba(239, 68, 68, 0.12)"
+                  h={46}
+                  onPress={handleCompleteServerCheckout}
+                  isDisabled={isProcessingCheckout}
+                >
+                  {isProcessingCheckout ? (
+                    <ActivityIndicator size="small" color={FAIL_COLOR} />
+                  ) : (
                     <HStack space="xs" alignItems="center">
-                      <DownloadCloud size={13} color={YELLOW} />
-                      <ButtonText color={YELLOW} fontSize="$2xs" fontWeight="800">
-                        Refetch Keys from API
+                      <LogOut size={14} color={FAIL_COLOR} />
+                      <ButtonText color={FAIL_COLOR} fontSize="$xs" fontWeight="900">
+                        {activeShiftPrompt.isOffline ? 'Offline Checkout' : 'Check Out Shift'}
                       </ButtonText>
                     </HStack>
-                  </Button>
-                ) : null}
-              </Box>
-            ) : null}
+                  )}
+                </Button>
 
-            {successMessage ? (
-              <Box bg="rgba(34, 197, 94, 0.15)" borderWidth={1} borderColor={PASS_COLOR} borderRadius="$md" p="$2" mt="$3">
+                <Button
+                  flex={1}
+                  size="sm"
+                  bg={YELLOW}
+                  h={46}
+                  onPress={handleResumeShift}
+                  isDisabled={isProcessingCheckout}
+                >
+                  <HStack space="xs" alignItems="center">
+                    <LogIn size={14} color={BLACK} />
+                    <ButtonText color={BLACK} fontSize="$xs" fontWeight="900">
+                      Login & Continue
+                    </ButtonText>
+                  </HStack>
+                </Button>
+              </HStack>
+
+              <Button
+                size="xs"
+                variant="outline"
+                borderColor="#334155"
+                mt="$2"
+                onPress={() => setActiveShiftPrompt(null)}
+                isDisabled={isProcessingCheckout}
+              >
+                <ButtonText color="#94a3b8" fontSize="$2xs">
+                  Dismiss / Scan Other Badge
+                </ButtonText>
+              </Button>
+            </Box>
+          )}
+
+          {/* Completed Shift Prompt */}
+          {completedShiftPrompt && (
+            <Box
+              bg={PANEL}
+              borderWidth={1}
+              borderColor={YELLOW}
+              borderLeftWidth={4}
+              borderLeftColor={YELLOW}
+              borderRadius="$xl"
+              p="$4"
+            >
+              <Text color={YELLOW} fontWeight="900" fontSize="$sm">
+                Shift #{completedShiftPrompt.shiftId.slice(0, 8)} Has Ended
+              </Text>
+              <Text color="#cbd5e1" fontSize="$xs" mt="$1">
+                Operator {completedShiftPrompt.operator} has already checked out of this shift.
+              </Text>
+
+              <HStack space="xs" mt="$3">
+                <Button
+                  flex={1}
+                  size="sm"
+                  variant="outline"
+                  borderColor="#475569"
+                  h={46}
+                  onPress={() => setCompletedShiftPrompt(null)}
+                >
+                  <ButtonText color="#cbd5e1">Dismiss</ButtonText>
+                </Button>
+                <Button
+                  flex={1.5}
+                  size="sm"
+                  bg={YELLOW}
+                  h={46}
+                  onPress={handleStartNewShift}
+                  isDisabled={isStartingNewShift}
+                >
+                  <ButtonText color={BLACK} fontWeight="900">
+                    {isStartingNewShift ? 'Starting...' : 'Start New Shift'}
+                  </ButtonText>
+                </Button>
+              </HStack>
+            </Box>
+          )}
+
+          {/* Error Message Card */}
+          {errorMessage && (
+            <Box
+              bg="rgba(239, 68, 68, 0.12)"
+              borderWidth={1}
+              borderColor={FAIL_COLOR}
+              borderLeftWidth={4}
+              borderLeftColor={FAIL_COLOR}
+              borderRadius="$xl"
+              p="$3.5"
+            >
+              <HStack justifyContent="space-between" alignItems="center">
+                <HStack space="xs" alignItems="center" flex={1}>
+                  <AlertTriangle size={16} color={FAIL_COLOR} />
+                  <Heading size="xs" color={FAIL_COLOR} fontWeight="900" letterSpacing={0.5}>
+                    {errorMessage.toLowerCase().includes('expired')
+                      ? 'SHIFT BADGE EXPIRED'
+                      : errorMessage.toLowerCase().includes('key') ||
+                        errorMessage.toLowerCase().includes('signature') ||
+                        errorMessage.toLowerCase().includes('certificate')
+                      ? 'KEY VERIFICATION FAILED'
+                      : 'VERIFICATION ERROR'}
+                  </Heading>
+                </HStack>
+                <Pressable onPress={() => setErrorMessage(null)} p="$1">
+                  <Text color="#94a3b8" fontSize="$xs" fontWeight="900">✕</Text>
+                </Pressable>
+              </HStack>
+
+              <Text color="#fca5a5" fontSize="$xs" fontWeight="600" mt="$1.5" lineHeight={18}>
+                {errorMessage}
+              </Text>
+
+              {errorMessage.toLowerCase().includes('key') ||
+              errorMessage.toLowerCase().includes('signature') ||
+              errorMessage.toLowerCase().includes('certificate') ? (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  borderColor={YELLOW}
+                  bg="rgba(250, 204, 21, 0.1)"
+                  mt="$2.5"
+                  onPress={() => void handleFetchServerKeys(false)}
+                >
+                  <HStack space="xs" alignItems="center">
+                    <DownloadCloud size={13} color={YELLOW} />
+                    <ButtonText color={YELLOW} fontSize="$2xs" fontWeight="800">
+                      Refetch Keys from API
+                    </ButtonText>
+                  </HStack>
+                </Button>
+              ) : null}
+            </Box>
+          )}
+
+          {/* Success Message Card */}
+          {successMessage && (
+            <Box
+              bg="rgba(34, 197, 94, 0.12)"
+              borderWidth={1}
+              borderColor={PASS_COLOR}
+              borderRadius="$lg"
+              p="$2.5"
+            >
+              <HStack space="xs" alignItems="center">
+                <ShieldCheck size={15} color={PASS_COLOR} />
                 <Text color={PASS_COLOR} fontSize="$xs" fontWeight="700">
                   {successMessage}
                 </Text>
-              </Box>
-            ) : null}
-
-            <Text color={MUTED} fontSize="$xs" textAlign="center" mt="$3">
-              Aim camera at your physical shift badge or operator QR card
-            </Text>
-          </Box>
+              </HStack>
+            </Box>
+          )}
         </VStack>
       </ScrollView>
 
@@ -1204,14 +1291,21 @@ ${k.x5c[0]}
         onRequestClose={() => setKeyPickerVisible(false)}
       >
         <Pressable style={styles.modalBackdrop} onPress={() => setKeyPickerVisible(false)}>
-          <Box bg={PANEL} borderWidth={2} borderColor={YELLOW} borderRadius="$xl" p="$4" width="100%" maxWidth={480}>
+          <Box
+            bg={PANEL}
+            borderWidth={1}
+            borderColor={BORDER}
+            borderRadius="$xl"
+            p="$4"
+            width="100%"
+            maxWidth={460}
+          >
             <HStack justifyContent="space-between" alignItems="center" mb="$3">
-              <Text color={YELLOW} fontSize="$lg" fontWeight="900">
-                Select Verification Key
+              <Text color={YELLOW} fontSize="$md" fontWeight="900">
+                Select Active Verification Key
               </Text>
             </HStack>
 
-            {/* Direct Refetch Button Inside Picker Modal */}
             <Button
               variant="outline"
               borderColor={YELLOW}
@@ -1226,7 +1320,7 @@ ${k.x5c[0]}
                 <HStack space="xs" alignItems="center">
                   <DownloadCloud size={14} color={YELLOW} />
                   <ButtonText color={YELLOW} fontSize="$xs" fontWeight="800">
-                    Refetch Public Keys from Server API
+                    Refetch Keys from Server API
                   </ButtonText>
                 </HStack>
               )}
@@ -1234,7 +1328,7 @@ ${k.x5c[0]}
 
             <ScrollView style={{ maxHeight: 260 }}>
               {publicKeys.length > 0 ? (
-                publicKeys.map(k => (
+                publicKeys.map((k: PublicKeyRecord) => (
                   <Pressable
                     key={k.id}
                     onPress={() => {
@@ -1246,39 +1340,42 @@ ${k.x5c[0]}
                       justifyContent="space-between"
                       alignItems="center"
                       borderTopWidth={1}
-                      borderTopColor="#334155"
+                      borderTopColor="#1e293b"
                       py="$3"
                     >
                       <VStack flex={1}>
-                        <Text color="#f8fafc" fontWeight="700">
+                        <Text color="#f8fafc" fontWeight="700" fontSize="$sm">
                           {k.name}
                         </Text>
-                        <Text color={MUTED} fontSize="$xs">
-                          ID: {k.id} · {k.created_at?.slice(0, 10)}
+                        <Text color={MUTED} fontSize="$2xs">
+                          ID: #{k.id} · {k.created_at?.slice(0, 10)}
                         </Text>
                       </VStack>
                       {k.id === selectedKey?.id ? (
-                        <Text color={YELLOW} fontSize="$xs" fontWeight="900">
-                          ACTIVE
-                        </Text>
+                        <Box bg="rgba(250, 204, 21, 0.15)" px="$2" py="$0.5" borderRadius="$sm">
+                          <Text color={YELLOW} fontSize="$2xs" fontWeight="900">
+                            ACTIVE
+                          </Text>
+                        </Box>
                       ) : null}
                     </HStack>
                   </Pressable>
                 ))
               ) : (
-                <Text color={MUTED} py="$3" textAlign="center">
-                  No public keys saved. Tap &quot;Refetch Public Keys from Server API&quot; above to download them.
+                <Text color={MUTED} py="$3" textAlign="center" fontSize="$xs">
+                  No public keys saved. Tap Refetch above to download.
                 </Text>
               )}
             </ScrollView>
-            <Button mt="$3" variant="outline" borderColor="#64748b" onPress={() => setKeyPickerVisible(false)}>
+
+            <Button mt="$3" variant="outline" borderColor="#475569" onPress={() => setKeyPickerVisible(false)}>
               <ButtonText color="#cbd5e1">Close</ButtonText>
             </Button>
           </Box>
         </Pressable>
       </Modal>
 
-      {/* Public Key Import Modal (Dedicated QR Review & SQLite Storage) */}
+      {/* Public Key Import Modal */}
       <PublicKeyModal
         visible={addKeyModalVisible}
         alias={newKeyName}
@@ -1304,7 +1401,7 @@ ${k.x5c[0]}
           setScannedKeyFormat(null);
           setAddKeyQrMode(false);
           setAddKeyModalVisible(false);
-          setSuccessMessage(`Saved key "${alias}" and selected it as Active Key!`);
+          setSuccessMessage(`Saved key "${alias}" and set as Active Key!`);
           Alert.alert(
             'Key Saved to Keystore',
             `Saved "${alias}" into local SQLite keystore and selected it as Active Key.`,
@@ -1312,7 +1409,7 @@ ${k.x5c[0]}
         }}
       />
 
-      {/* Root CA Manager Modal (large viewer/editor) */}
+      {/* Root CA Manager Modal */}
       <RootCaModal
         visible={rootCaModalVisible}
         value={rootCaInput}
@@ -1350,10 +1447,18 @@ ${k.x5c[0]}
         onRequestClose={() => setServerModalVisible(false)}
       >
         <View style={styles.modalBackdrop}>
-          <Box bg={PANEL} borderWidth={2} borderColor={YELLOW} borderRadius="$xl" p="$4" width="100%" maxWidth={500}>
+          <Box
+            bg={PANEL}
+            borderWidth={1}
+            borderColor={BORDER}
+            borderRadius="$xl"
+            p="$4"
+            width="100%"
+            maxWidth={480}
+          >
             <HStack justifyContent="space-between" alignItems="center" mb="$1">
-              <Text color={YELLOW} fontSize="$lg" fontWeight="900">
-                Server API &amp; HTTPS Root CA
+              <Text color={YELLOW} fontSize="$md" fontWeight="900">
+                Server API & HTTPS Root CA
               </Text>
               <Text
                 color={serverUrlInput.trim().toLowerCase().startsWith('https://') ? PASS_COLOR : YELLOW}
@@ -1364,16 +1469,18 @@ ${k.x5c[0]}
               </Text>
             </HStack>
 
-            <Text color={MUTED} fontSize="$2xs" mb="$2">
-              Supports both <Text color={PASS_COLOR} fontWeight="700">https://</Text> and <Text color={YELLOW} fontWeight="700">http://</Text> endpoints.
+            <Text color={MUTED} fontSize="$2xs" mb="$3">
+              Supports both HTTPS and HTTP endpoints with custom Root CA support.
             </Text>
 
-            <HStack space="xs" mb="$2">
+            {/* Protocol Switcher */}
+            <HStack space="xs" mb="$3">
               <Button
+                flex={1}
                 size="xs"
                 variant="outline"
-                borderColor={PASS_COLOR}
-                bg={serverUrlInput.trim().toLowerCase().startsWith('https://') ? 'rgba(34, 197, 94, 0.2)' : 'transparent'}
+                borderColor={serverUrlInput.trim().toLowerCase().startsWith('https://') ? PASS_COLOR : '#334155'}
+                bg={serverUrlInput.trim().toLowerCase().startsWith('https://') ? 'rgba(34, 197, 94, 0.15)' : 'transparent'}
                 onPress={() => {
                   const stripped = serverUrlInput.trim().replace(/^https?:\/\//i, '');
                   setServerUrlInput(`https://${stripped}`);
@@ -1384,10 +1491,11 @@ ${k.x5c[0]}
                 </ButtonText>
               </Button>
               <Button
+                flex={1}
                 size="xs"
                 variant="outline"
-                borderColor={YELLOW}
-                bg={serverUrlInput.trim().toLowerCase().startsWith('http://') ? 'rgba(250, 204, 21, 0.15)' : 'transparent'}
+                borderColor={serverUrlInput.trim().toLowerCase().startsWith('http://') ? YELLOW : '#334155'}
+                bg={serverUrlInput.trim().toLowerCase().startsWith('http://') ? 'rgba(250, 204, 21, 0.12)' : 'transparent'}
                 onPress={() => {
                   const stripped = serverUrlInput.trim().replace(/^https?:\/\//i, '');
                   setServerUrlInput(`http://${stripped}`);
@@ -1399,11 +1507,12 @@ ${k.x5c[0]}
               </Button>
             </HStack>
 
+            {/* URL Input */}
             <Input variant="outline" size="md" borderColor="#334155" mb="$3">
               <InputField
                 value={serverUrlInput}
                 onChangeText={setServerUrlInput}
-                placeholder="https://veriflow.talhahub.io or http://10.0.2.2:8000"
+                placeholder="https://veriflow.talhahub.io/api or http://10.0.2.2:8000"
                 placeholderTextColor="#64748b"
                 color="#f8fafc"
                 autoCapitalize="none"
@@ -1411,10 +1520,10 @@ ${k.x5c[0]}
               />
             </Input>
 
-            {/* Root CA Certificate summary (full editor lives in its own modal) */}
+            {/* Root CA summary card */}
             <Box
               bg={PANEL_ALT}
-              p="$2.5"
+              p="$3"
               borderRadius="$lg"
               borderWidth={1}
               borderColor={rootCaCert || rootCaInput.trim() ? PASS_COLOR : '#334155'}
@@ -1423,7 +1532,7 @@ ${k.x5c[0]}
               <HStack justifyContent="space-between" alignItems="center">
                 <VStack flex={1} mr="$2">
                   <Text color="#f8fafc" fontSize="$xs" fontWeight="800">
-                    Root CA Certificate (For HTTPS)
+                    Root CA Certificate
                   </Text>
                   <Text
                     color={rootCaCert ? PASS_COLOR : rootCaInput.trim() ? YELLOW : MUTED}
@@ -1433,29 +1542,29 @@ ${k.x5c[0]}
                     {rootCaCert
                       ? '✓ Custom Root CA applied'
                       : rootCaInput.trim()
-                      ? '• Draft pending — open manager and Apply'
-                      : '• Using system CAs only'}
+                      ? '• Draft pending review'
+                      : '• System CAs only'}
                   </Text>
                 </VStack>
                 <Button
                   size="xs"
                   variant="outline"
                   borderColor={YELLOW}
-                  bg="rgba(250, 204, 21, 0.14)"
+                  bg="rgba(250, 204, 21, 0.1)"
                   onPress={() => {
                     setServerModalVisible(false);
                     setRootCaModalVisible(true);
                   }}
                 >
                   <ButtonText color={YELLOW} fontSize="$2xs" fontWeight="900">
-                    Manage Root CA
+                    Manage CA
                   </ButtonText>
                 </Button>
               </HStack>
             </Box>
 
             <HStack space="sm" justifyContent="flex-end">
-              <Button variant="outline" borderColor="#64748b" onPress={() => setServerModalVisible(false)}>
+              <Button variant="outline" borderColor="#475569" onPress={() => setServerModalVisible(false)}>
                 <ButtonText color="#cbd5e1">Cancel</ButtonText>
               </Button>
               <Button
@@ -1480,7 +1589,7 @@ ${k.x5c[0]}
                     if (rootCaInput.trim() && !appliedToNative) {
                       Alert.alert(
                         'Root CA Notice',
-                        'Root CA saved. Because the app is running in Expo Go without compiled native TLS hooks, Android OS will block HTTPS unless talhaRootCA.crt is installed in Android Settings -> Security -> Install Certificate -> CA certificate.',
+                        'Root CA saved. Because the app is running in Expo Go without compiled native TLS hooks, install talhaRootCA.crt in Android Settings -> Security -> Install Certificate -> CA certificate.',
                       );
                     }
                     await handleFetchServerKeys(false);
@@ -1490,46 +1599,87 @@ ${k.x5c[0]}
                 }}
               >
                 <ButtonText color={BLACK} fontWeight="900">
-                  Save &amp; Refetch
+                  Save & Refetch
                 </ButtonText>
               </Button>
             </HStack>
           </Box>
         </View>
       </Modal>
-    </Box>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(2, 6, 23, 0.82)',
+    backgroundColor: 'rgba(2, 6, 23, 0.85)',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 20,
   },
+  changeKeyBadge: {
+    backgroundColor: 'rgba(250, 204, 21, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(250, 204, 21, 0.35)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  expandToggle: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#1e293b',
+  },
+  cancelModeBadge: {
+    backgroundColor: 'rgba(250, 204, 21, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
   reticleOverlay: {
-    ...StyleSheet.absoluteFill,
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
   },
   reticleBox: {
-    width: 170,
-    height: 170,
-    borderWidth: 2,
-    borderColor: YELLOW,
-    borderRadius: 16,
-    borderStyle: 'dashed',
+    width: 175,
+    height: 175,
+    position: 'relative',
   },
-  refreshBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(250, 204, 21, 0.12)',
-    borderWidth: 1,
+  corner: {
+    position: 'absolute',
+    width: 22,
+    height: 22,
     borderColor: YELLOW,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
+  },
+  cornerTL: {
+    top: 0,
+    left: 0,
+    borderTopWidth: 3,
+    borderLeftWidth: 3,
+    borderTopLeftRadius: 6,
+  },
+  cornerTR: {
+    top: 0,
+    right: 0,
+    borderTopWidth: 3,
+    borderRightWidth: 3,
+    borderTopRightRadius: 6,
+  },
+  cornerBL: {
+    bottom: 0,
+    left: 0,
+    borderBottomWidth: 3,
+    borderLeftWidth: 3,
+    borderBottomLeftRadius: 6,
+  },
+  cornerBR: {
+    bottom: 0,
+    right: 0,
+    borderBottomWidth: 3,
+    borderRightWidth: 3,
+    borderBottomRightRadius: 6,
   },
 });

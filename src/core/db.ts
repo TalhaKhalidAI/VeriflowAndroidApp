@@ -473,6 +473,43 @@ export function updateScanStatus(id: number, status: 'pass' | 'fail'): Promise<v
   return Promise.resolve();
 }
 
+export interface DailyScanStats {
+  total: number;
+  passCount: number;
+  failCount: number;
+  pendingSyncCount: number;
+  syncedCount: number;
+}
+
+export function getDailyScanStats(userId?: number, shiftId?: string): Promise<DailyScanStats> {
+  const allScans: ScanRecord[] = !db
+    ? memoryStore.scans
+    : (dbAny.getAllSync('SELECT * FROM scans_queue ORDER BY id DESC') as ScanRecord[]);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const relevant = allScans.filter(s => {
+    if (userId !== undefined && s.user_id !== undefined && s.user_id !== userId) return false;
+    if (shiftId && s.shift_id && s.shift_id === shiftId) return true;
+    if (s.scanned_at && s.scanned_at.startsWith(today)) return true;
+    return false;
+  });
+
+  const passCount = relevant.filter(s => s.status === 'pass').length;
+  const failCount = relevant.filter(s => s.status === 'fail').length;
+  const pendingSyncCount = allScans.filter(
+    s => s.sync_status !== 'synced' && (userId === undefined || s.user_id === userId),
+  ).length;
+  const syncedCount = relevant.filter(s => s.sync_status === 'synced').length;
+
+  return Promise.resolve({
+    total: relevant.length,
+    passCount,
+    failCount,
+    pendingSyncCount,
+    syncedCount,
+  });
+}
+
 // ---------------- WIPE ALL LOCAL SQLITE DATA ----------------
 export function deleteAllSqliteData(): Promise<{
   deletedScans: number;

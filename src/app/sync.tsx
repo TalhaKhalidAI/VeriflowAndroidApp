@@ -1,5 +1,3 @@
-import SyncStatusPage from '@/Pages/SyncStatusPage';
+import HistoryPage from '../Pages/HistoryPage';
 
-export default function SyncScreen() {
-  return <SyncStatusPage />;
-}
+export default HistoryPage;

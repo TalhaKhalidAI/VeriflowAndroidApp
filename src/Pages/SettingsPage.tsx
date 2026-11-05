@@ -14,24 +14,35 @@ import {
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useFocusEffect } from 'expo-router';
 import {
-  Pencil,
-  Trash2,
-  Key,
-  Sliders,
-  Globe,
+  ChevronDown,
+  ChevronUp,
   DownloadCloud,
-  ShieldAlert,
-  ShieldCheck,
-  Lock,
-  QrCode,
   Flashlight,
   FlashlightOff,
+  Globe,
+  Key,
+  Lock,
+  Pencil,
+  Plus,
+  QrCode,
+  ShieldAlert,
+  ShieldCheck,
+  Sliders,
+  Trash2,
 } from 'lucide-react-native';
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Modal, StyleSheet, View } from 'react-native';
-import { useAuth } from '../core/authContext';
-import { RootCaModal } from '../components/RootCaModal';
+import {
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  StyleSheet,
+  View,
+} from 'react-native';
 import { PublicKeyModal } from '../components/PublicKeyModal';
+import { RootCaModal } from '../components/RootCaModal';
+import { useAuth } from '../core/authContext';
 import {
   addInventoryItem,
   addPublicKey,
@@ -55,10 +66,13 @@ import { InventoryRecord, PublicKeyRecord } from '../core/types';
 const BLACK = '#07111d';
 const PANEL = '#0f172a';
 const PANEL_ALT = '#111c2e';
+const BORDER = '#1e293b';
 const YELLOW = '#facc15';
 const MUTED = '#94a3b8';
 const PASS_COLOR = '#22c55e';
 const FAIL_COLOR = '#ef4444';
+
+type SettingsTab = 'RULES' | 'KEYS' | 'NETWORK';
 
 export default function SettingsPage() {
   const {
@@ -71,8 +85,8 @@ export default function SettingsPage() {
     setRootCaCert,
   } = useAuth();
 
-  // Tab: 'KEYS' | 'RULES' | 'NETWORK'
-  const [activeTab, setActiveTab] = useState<'KEYS' | 'RULES' | 'NETWORK'>('RULES');
+  // Active Tab
+  const [activeTab, setActiveTab] = useState<SettingsTab>('KEYS');
 
   // Permission gates
   const canViewRules = hasPermission('inventory_rules.view');
@@ -90,6 +104,7 @@ export default function SettingsPage() {
   const [publicKeys, setPublicKeys] = useState<PublicKeyRecord[]>([]);
   const [keyName, setKeyName] = useState('');
   const [keyValue, setKeyValue] = useState('');
+  const [showManualKeyForm, setShowManualKeyForm] = useState(false);
   const [editingKey, setEditingKey] = useState<PublicKeyRecord | null>(null);
   const [editKeyName, setEditKeyName] = useState('');
   const [editKeyValue, setEditKeyValue] = useState('');
@@ -108,6 +123,7 @@ export default function SettingsPage() {
   const [ruleName, setRuleName] = useState('');
   const [ruleKey, setRuleKey] = useState('');
   const [ruleValue, setRuleValue] = useState('');
+  const [showAddRuleForm, setShowAddRuleForm] = useState(false);
   const [editingRule, setEditingRule] = useState<InventoryRecord | null>(null);
   const [editRuleName, setEditRuleName] = useState('');
   const [editRuleKey, setEditRuleKey] = useState('');
@@ -171,7 +187,6 @@ export default function SettingsPage() {
       setRootCaInput(parsed.pem);
       setScannedCaFormat(parsed.detectedFormat);
     } catch {
-      // Show exactly what the scanner received so it can be inspected / fixed in the manager.
       setRootCaInput(data);
       setScannedCaFormat('Raw scan — needs review');
     }
@@ -199,11 +214,9 @@ export default function SettingsPage() {
       setKeyName('');
       setKeyValue('');
       setScannedKeyFormat(null);
+      setShowManualKeyForm(false);
       await refresh();
-      Alert.alert(
-        'Saved to Keystore',
-        `Public key "${keyName.trim()}" added to local SQLite keystore.`,
-      );
+      Alert.alert('Saved to Keystore', `Public key "${keyName.trim()}" added to local SQLite keystore.`);
     } catch (err: any) {
       Alert.alert('Invalid Public Key', err.message || 'Key parsing failed');
     }
@@ -227,10 +240,7 @@ export default function SettingsPage() {
         'Invalid Key QR',
         err.message || 'Scanned QR is not a valid Public Key (JSON, Base64, or PEM).',
         [
-          {
-            text: 'Scan Again',
-            onPress: () => setKeyScanLock(false),
-          },
+          { text: 'Scan Again', onPress: () => setKeyScanLock(false) },
           {
             text: 'Close',
             style: 'cancel',
@@ -281,7 +291,6 @@ export default function SettingsPage() {
     ]);
   };
 
-  // Fetch Public Keys from Server API (JWKS)
   const fetchServerKeys = async () => {
     if (!canCreateKeys) {
       Alert.alert('Permission Denied', 'Importing keys requires "keys.create" permission.');
@@ -306,9 +315,7 @@ export default function SettingsPage() {
             const pem =
               k.public_key ||
               (k.x5c && k.x5c[0]
-                ? `-----BEGIN PUBLIC KEY-----
-${k.x5c[0]}
------END PUBLIC KEY-----`
+                ? `-----BEGIN PUBLIC KEY-----\n${k.x5c[0]}\n-----END PUBLIC KEY-----`
                 : null);
 
             if (pem) {
@@ -344,6 +351,7 @@ ${k.x5c[0]}
     setRuleName('');
     setRuleKey('');
     setRuleValue('');
+    setShowAddRuleForm(false);
     await refresh();
   };
 
@@ -386,14 +394,14 @@ ${k.x5c[0]}
     if (!canDeleteAllData) {
       Alert.alert(
         'Permission Denied',
-        'Your user account lacks "user.delete_all_data" permission. Ask an admin to grant it and tap Sync Permissions.',
+        'Your user account lacks "user.delete_all_data" permission.',
       );
       return;
     }
 
     Alert.alert(
       'Delete All Local SQLite Data?',
-      'This will permanently wipe all local scans, inventory rules, and public keys stored in SQLite on this Android device. Your active login session and server URL will remain intact.',
+      'This will permanently wipe all local scans, inventory rules, and public keys stored in SQLite on this Android device. Active login session and Server URL will remain intact.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -418,16 +426,27 @@ ${k.x5c[0]}
     );
   };
 
-  return (
-    <ScrollView style={{ flex: 1, backgroundColor: BLACK }}>
-      <Box px="$4" py="$6">
-        <VStack space="lg" width="100%" maxWidth={580} alignSelf="center">
-          <Heading color={YELLOW} size="2xl" fontWeight="900">
-            Settings & Local Storage
-          </Heading>
+  const isHttps = serverUrl.trim().toLowerCase().startsWith('https://');
 
-          {/* Navigation Tabs */}
-          <HStack space="xs" bg={PANEL_ALT} p="$1" borderRadius="$lg" borderWidth={1} borderColor="#334155">
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      style={{ flex: 1, backgroundColor: BLACK }}
+    >
+      <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingVertical: 24 }}>
+        <VStack space="lg" width="100%" maxWidth={580} alignSelf="center">
+          {/* Header */}
+          <VStack space="2xs">
+            <Heading color="#f8fafc" size="xl" fontWeight="900" letterSpacing={0.5}>
+              Settings
+            </Heading>
+            <Text color={MUTED} fontSize="$xs">
+              Manage verification rules, keystore, and server configuration.
+            </Text>
+          </VStack>
+
+          {/* Navigation Tabs (Compact Responsive Segmented Control) */}
+          <HStack space="xs" bg={PANEL_ALT} p="$1" borderRadius="$lg" borderWidth={1} borderColor={BORDER}>
             <Pressable
               flex={1}
               py="$2"
@@ -436,9 +455,14 @@ ${k.x5c[0]}
               alignItems="center"
               onPress={() => setActiveTab('RULES')}
             >
-              <HStack space="xs" alignItems="center">
-                <Sliders size={16} color={activeTab === 'RULES' ? BLACK : MUTED} />
-                <Text color={activeTab === 'RULES' ? BLACK : MUTED} fontWeight="800" fontSize="$xs">
+              <HStack space="2xs" alignItems="center">
+                <Sliders size={14} color={activeTab === 'RULES' ? BLACK : MUTED} />
+                <Text
+                  color={activeTab === 'RULES' ? BLACK : MUTED}
+                  fontWeight="800"
+                  fontSize="$xs"
+                  numberOfLines={1}
+                >
                   Inventory Rules
                 </Text>
               </HStack>
@@ -452,9 +476,14 @@ ${k.x5c[0]}
               alignItems="center"
               onPress={() => setActiveTab('KEYS')}
             >
-              <HStack space="xs" alignItems="center">
-                <Key size={16} color={activeTab === 'KEYS' ? BLACK : MUTED} />
-                <Text color={activeTab === 'KEYS' ? BLACK : MUTED} fontWeight="800" fontSize="$xs">
+              <HStack space="2xs" alignItems="center">
+                <Key size={14} color={activeTab === 'KEYS' ? BLACK : MUTED} />
+                <Text
+                  color={activeTab === 'KEYS' ? BLACK : MUTED}
+                  fontWeight="800"
+                  fontSize="$xs"
+                  numberOfLines={1}
+                >
                   Public Keys
                 </Text>
               </HStack>
@@ -468,9 +497,14 @@ ${k.x5c[0]}
               alignItems="center"
               onPress={() => setActiveTab('NETWORK')}
             >
-              <HStack space="xs" alignItems="center">
-                <Globe size={16} color={activeTab === 'NETWORK' ? BLACK : MUTED} />
-                <Text color={activeTab === 'NETWORK' ? BLACK : MUTED} fontWeight="800" fontSize="$xs">
+              <HStack space="2xs" alignItems="center">
+                <Globe size={14} color={activeTab === 'NETWORK' ? BLACK : MUTED} />
+                <Text
+                  color={activeTab === 'NETWORK' ? BLACK : MUTED}
+                  fontWeight="800"
+                  fontSize="$xs"
+                  numberOfLines={1}
+                >
                   Server API
                 </Text>
               </HStack>
@@ -480,11 +514,11 @@ ${k.x5c[0]}
           {/* ======================================================== */}
           {/* TAB 1: INVENTORY RULES */}
           {/* ======================================================== */}
-          {activeTab === 'RULES' ? (
+          {activeTab === 'RULES' && (
             !canViewRules ? (
-              <Box bg={PANEL} p="$6" borderRadius="$xl" borderWidth={1} borderColor="#ef4444" alignItems="center">
-                <ShieldAlert size={48} color={FAIL_COLOR} />
-                <Heading color={FAIL_COLOR} size="md" mt="$3">
+              <Box bg={PANEL} p="$6" borderRadius="$xl" borderWidth={1} borderColor={FAIL_COLOR} alignItems="center">
+                <ShieldAlert size={44} color={FAIL_COLOR} />
+                <Heading color={FAIL_COLOR} size="sm" mt="$3">
                   Permission Denied
                 </Heading>
                 <Text color={MUTED} fontSize="$xs" textAlign="center" mt="$1">
@@ -492,175 +526,164 @@ ${k.x5c[0]}
                 </Text>
               </Box>
             ) : (
-              <Box borderWidth={2} borderColor={YELLOW} borderRadius="$xl" bg={PANEL} p="$4">
+              <Box borderRadius="$xl" bg={PANEL} borderWidth={1} borderColor={BORDER} p="$4">
                 <HStack justifyContent="space-between" alignItems="center" mb="$1">
-                  <Text color="#f8fafc" fontSize="$lg" fontWeight="800">
-                    SQLite Inventory Rules ({rules.length})
-                  </Text>
+                  <VStack flex={1}>
+                    <Text color="#f8fafc" fontSize="$md" fontWeight="800">
+                      Inventory Rules ({rules.length})
+                    </Text>
+                    <Text color={MUTED} fontSize="$2xs">
+                      Applied during QR scan to check payload claims.
+                    </Text>
+                  </VStack>
+
+                  {/* Compact permission badge */}
                   <Box
-                    bg={
-                      canCreateRules && canUpdateRules && canDeleteRules
-                        ? 'rgba(34, 197, 94, 0.2)'
-                        : 'rgba(250, 204, 21, 0.15)'
-                    }
+                    bg={canCreateRules ? 'rgba(34, 197, 94, 0.12)' : 'rgba(148, 163, 184, 0.1)'}
                     px="$2"
-                    py="$1"
-                    borderRadius="$sm"
+                    py="$0.5"
+                    borderRadius="$full"
                     borderWidth={1}
-                    borderColor={
-                      canCreateRules && canUpdateRules && canDeleteRules ? PASS_COLOR : YELLOW
-                    }
+                    borderColor={canCreateRules ? 'rgba(34, 197, 94, 0.3)' : '#334155'}
                   >
                     <Text
-                      color={
-                        canCreateRules && canUpdateRules && canDeleteRules ? PASS_COLOR : YELLOW
-                      }
+                      color={canCreateRules ? PASS_COLOR : MUTED}
                       fontSize="$2xs"
                       fontWeight="900"
                     >
                       {canCreateRules && canUpdateRules && canDeleteRules
                         ? 'FULL CRUD'
                         : canCreateRules
-                        ? 'VIEW + CREATE'
-                        : 'VIEW ONLY'}
+                        ? 'CREATE'
+                        : 'READ ONLY'}
                     </Text>
                   </Box>
                 </HStack>
 
-                <Text color={MUTED} fontSize="$xs" mb="$3">
-                  Rules tested optionally during QR scanning to compare claims with expected values.
-                </Text>
-
-                {/* Permissions Status Indicators */}
-                <Box bg={PANEL_ALT} p="$2" borderRadius="$md" borderWidth={1} borderColor="#334155" mb="$3">
-                  <HStack space="sm" flexWrap="wrap">
-                    <Text color={PASS_COLOR} fontSize="$2xs">
-                      • view: GRANTED
-                    </Text>
-                    <Text color={canCreateRules ? PASS_COLOR : MUTED} fontSize="$2xs">
-                      • create: {canCreateRules ? 'GRANTED' : 'DENIED'}
-                    </Text>
-                    <Text color={canUpdateRules ? PASS_COLOR : MUTED} fontSize="$2xs">
-                      • update: {canUpdateRules ? 'GRANTED' : 'DENIED'}
-                    </Text>
-                    <Text color={canDeleteRules ? PASS_COLOR : MUTED} fontSize="$2xs">
-                      • delete: {canDeleteRules ? 'GRANTED' : 'DENIED'}
-                    </Text>
-                  </HStack>
-                </Box>
-
-                {/* Add Rule Form (Gated by canCreateRules) */}
+                {/* Add Rule Toggle / Form */}
                 {canCreateRules ? (
-                  <VStack space="xs" mb="$4">
-                    <Input variant="outline" size="sm" borderColor="#334155">
-                      <InputField
-                        value={ruleName}
-                        onChangeText={setRuleName}
-                        placeholder="Rule Name (e.g. WH-A Electronics Batch)"
-                        placeholderTextColor="#64748b"
-                        color="#f8fafc"
-                      />
-                    </Input>
-                    <HStack space="xs">
-                      <Input variant="outline" size="sm" borderColor="#334155" flex={1}>
-                        <InputField
-                          value={ruleKey}
-                          onChangeText={setRuleKey}
-                          placeholder="Claim key (e.g. batch_no)"
-                          placeholderTextColor="#64748b"
-                          color="#f8fafc"
-                        />
-                      </Input>
-                      <Input variant="outline" size="sm" borderColor="#334155" flex={1}>
-                        <InputField
-                          value={ruleValue}
-                          onChangeText={setRuleValue}
-                          placeholder="Expected value (e.g. 2026-X)"
-                          placeholderTextColor="#64748b"
-                          color="#f8fafc"
-                        />
-                      </Input>
-                    </HStack>
-
-                    <Button bg={YELLOW} borderRadius="$md" mt="$2" onPress={saveRule}>
-                      <ButtonText color={BLACK} fontWeight="900">
-                        + Add Rule
-                      </ButtonText>
+                  <VStack space="xs" mt="$3" mb="$2">
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      borderColor={YELLOW}
+                      bg="rgba(250, 204, 21, 0.08)"
+                      onPress={() => setShowAddRuleForm((prev: boolean) => !prev)}
+                    >
+                      <HStack space="xs" alignItems="center">
+                        <Plus size={14} color={YELLOW} />
+                        <ButtonText color={YELLOW} fontSize="$xs" fontWeight="800">
+                          {showAddRuleForm ? 'Hide Rule Form' : '+ Add Inventory Rule'}
+                        </ButtonText>
+                      </HStack>
                     </Button>
+
+                    {showAddRuleForm && (
+                      <Box bg={PANEL_ALT} p="$3" borderRadius="$lg" borderWidth={1} borderColor="#334155" mt="$2">
+                        <VStack space="xs">
+                          <Input variant="outline" size="sm" borderColor="#334155">
+                            <InputField
+                              value={ruleName}
+                              onChangeText={setRuleName}
+                              placeholder="Rule Name (e.g. Batch Verification)"
+                              placeholderTextColor="#64748b"
+                              color="#f8fafc"
+                            />
+                          </Input>
+                          <HStack space="xs">
+                            <Input variant="outline" size="sm" borderColor="#334155" flex={1}>
+                              <InputField
+                                value={ruleKey}
+                                onChangeText={setRuleKey}
+                                placeholder="Claim key (e.g. batch_no)"
+                                placeholderTextColor="#64748b"
+                                color="#f8fafc"
+                              />
+                            </Input>
+                            <Input variant="outline" size="sm" borderColor="#334155" flex={1}>
+                              <InputField
+                                value={ruleValue}
+                                onChangeText={setRuleValue}
+                                placeholder="Expected value"
+                                placeholderTextColor="#64748b"
+                                color="#f8fafc"
+                              />
+                            </Input>
+                          </HStack>
+
+                          <Button bg={YELLOW} borderRadius="$md" mt="$1.5" onPress={saveRule}>
+                            <ButtonText color={BLACK} fontWeight="900" fontSize="$xs">
+                              Save Rule
+                            </ButtonText>
+                          </Button>
+                        </VStack>
+                      </Box>
+                    )}
                   </VStack>
-                ) : (
-                  <Box bg="rgba(148, 163, 184, 0.08)" p="$3" borderRadius="$md" mb="$4" borderWidth={1} borderColor="#334155">
-                    <HStack space="xs" alignItems="center">
-                      <Lock size={14} color={MUTED} />
-                      <Text color={MUTED} fontSize="$xs">
-                        Rule creation disabled. Requires &quot;inventory_rules.create&quot; permission.
-                      </Text>
-                    </HStack>
-                  </Box>
-                )}
+                ) : null}
 
                 {/* Rules List */}
-                <VStack space="xs">
-                  {rules.map(r => (
-                    <HStack
-                      key={r.id}
-                      justifyContent="space-between"
-                      alignItems="center"
-                      borderTopWidth={1}
-                      borderTopColor="#334155"
-                      py="$3"
-                    >
-                      <VStack flex={1} mr="$2">
-                        <Text color="#f8fafc" fontWeight="700">
-                          {r.inventory_name}
-                        </Text>
-                        <Text color={MUTED} fontSize="$xs">
-                          Match: <Text color={YELLOW}>{r.matching_claim_key}</Text> == &quot;{r.expected_value}&quot;
-                        </Text>
-                      </VStack>
+                <VStack space="xs" mt="$2">
+                  {rules.length > 0 ? (
+                    rules.map((r: InventoryRecord) => (
+                      <HStack
+                        key={r.id}
+                        justifyContent="space-between"
+                        alignItems="center"
+                        borderTopWidth={1}
+                        borderTopColor="#1e293b"
+                        py="$2.5"
+                      >
+                        <VStack flex={1} mr="$2">
+                          <Text color="#f8fafc" fontWeight="700" fontSize="$sm">
+                            {r.inventory_name}
+                          </Text>
+                          <Text color={MUTED} fontSize="$2xs">
+                            Match: <Text color={YELLOW}>{r.matching_claim_key}</Text> == &quot;{r.expected_value}&quot;
+                          </Text>
+                        </VStack>
 
-                      {/* Edit/Delete Actions gated by permissions */}
-                      <HStack space="xs">
-                        {canUpdateRules ? (
-                          <Pressable
-                            onPress={() => {
-                              setEditingRule(r);
-                              setEditRuleName(r.inventory_name);
-                              setEditRuleKey(r.matching_claim_key);
-                              setEditRuleValue(r.expected_value);
-                            }}
-                            style={styles.actionBtn}
-                          >
-                            <Pencil size={16} color={YELLOW} />
-                          </Pressable>
-                        ) : null}
+                        <HStack space="xs">
+                          {canUpdateRules ? (
+                            <Pressable
+                              onPress={() => {
+                                setEditingRule(r);
+                                setEditRuleName(r.inventory_name);
+                                setEditRuleKey(r.matching_claim_key);
+                                setEditRuleValue(r.expected_value);
+                              }}
+                              style={styles.actionBtn}
+                            >
+                              <Pencil size={15} color={YELLOW} />
+                            </Pressable>
+                          ) : null}
 
-                        {canDeleteRules ? (
-                          <Pressable onPress={() => confirmDeleteRule(r)} style={styles.actionBtn}>
-                            <Trash2 size={16} color="#f87171" />
-                          </Pressable>
-                        ) : null}
+                          {canDeleteRules ? (
+                            <Pressable onPress={() => confirmDeleteRule(r)} style={styles.actionBtn}>
+                              <Trash2 size={15} color={FAIL_COLOR} />
+                            </Pressable>
+                          ) : null}
+                        </HStack>
                       </HStack>
-                    </HStack>
-                  ))}
-                  {!rules.length ? (
+                    ))
+                  ) : (
                     <Text color={MUTED} fontSize="$xs" py="$4" textAlign="center">
                       No inventory rules stored in SQLite.
                     </Text>
-                  ) : null}
+                  )}
                 </VStack>
               </Box>
             )
-          ) : null}
+          )}
 
           {/* ======================================================== */}
           {/* TAB 2: PUBLIC KEYS */}
           {/* ======================================================== */}
-          {activeTab === 'KEYS' ? (
+          {activeTab === 'KEYS' && (
             !canViewKeys ? (
-              <Box bg={PANEL} p="$6" borderRadius="$xl" borderWidth={1} borderColor="#ef4444" alignItems="center">
-                <ShieldAlert size={48} color={FAIL_COLOR} />
-                <Heading color={FAIL_COLOR} size="md" mt="$3">
+              <Box bg={PANEL} p="$6" borderRadius="$xl" borderWidth={1} borderColor={FAIL_COLOR} alignItems="center">
+                <ShieldAlert size={44} color={FAIL_COLOR} />
+                <Heading color={FAIL_COLOR} size="sm" mt="$3">
                   Permission Denied
                 </Heading>
                 <Text color={MUTED} fontSize="$xs" textAlign="center" mt="$1">
@@ -668,106 +691,85 @@ ${k.x5c[0]}
                 </Text>
               </Box>
             ) : (
-              <Box borderWidth={2} borderColor={YELLOW} borderRadius="$xl" bg={PANEL} p="$4">
-                <HStack justifyContent="space-between" alignItems="center" mb="$1">
-                  <Text color="#f8fafc" fontSize="$lg" fontWeight="800">
-                    Public Keys ({publicKeys.length})
-                  </Text>
+              <Box borderRadius="$xl" bg={PANEL} borderWidth={1} borderColor={BORDER} p="$4">
+                {/* Header & Permission Status */}
+                <HStack justifyContent="space-between" alignItems="center" mb="$2">
+                  <VStack flex={1}>
+                    <Text color="#f8fafc" fontSize="$md" fontWeight="800">
+                      Public Keys ({publicKeys.length})
+                    </Text>
+                    <Text color={MUTED} fontSize="$2xs">
+                      RSA verification keys used to verify token signatures.
+                    </Text>
+                  </VStack>
+
                   <Box
-                    bg={
-                      canCreateKeys && canUpdateKeys && canDeleteKeys
-                        ? 'rgba(34, 197, 94, 0.2)'
-                        : 'rgba(250, 204, 21, 0.15)'
-                    }
+                    bg={canCreateKeys ? 'rgba(34, 197, 94, 0.12)' : 'rgba(148, 163, 184, 0.1)'}
                     px="$2"
-                    py="$1"
-                    borderRadius="$sm"
+                    py="$0.5"
+                    borderRadius="$full"
                     borderWidth={1}
-                    borderColor={
-                      canCreateKeys && canUpdateKeys && canDeleteKeys ? PASS_COLOR : YELLOW
-                    }
+                    borderColor={canCreateKeys ? 'rgba(34, 197, 94, 0.3)' : '#334155'}
                   >
                     <Text
-                      color={
-                        canCreateKeys && canUpdateKeys && canDeleteKeys ? PASS_COLOR : YELLOW
-                      }
+                      color={canCreateKeys ? PASS_COLOR : MUTED}
                       fontSize="$2xs"
                       fontWeight="900"
                     >
                       {canCreateKeys && canUpdateKeys && canDeleteKeys
-                        ? 'FULL CRUD'
+                        ? 'FULL ACCESS'
                         : canCreateKeys
-                        ? 'VIEW + CREATE'
-                        : 'VIEW ONLY'}
+                        ? 'CREATE ONLY'
+                        : 'READ ONLY'}
                     </Text>
                   </Box>
                 </HStack>
 
-                <Text color={MUTED} fontSize="$xs" mb="$3">
-                  RSA public verification keys used by the mobile scanner to verify RS256 token signatures.
-                </Text>
-
-                {/* Permissions Status Indicators */}
-                <Box bg={PANEL_ALT} p="$2" borderRadius="$md" borderWidth={1} borderColor="#334155" mb="$3">
-                  <HStack space="sm" flexWrap="wrap">
-                    <Text color={PASS_COLOR} fontSize="$2xs">
-                      • view: GRANTED
-                    </Text>
-                    <Text color={canCreateKeys ? PASS_COLOR : MUTED} fontSize="$2xs">
-                      • create: {canCreateKeys ? 'GRANTED' : 'DENIED'}
-                    </Text>
-                    <Text color={canUpdateKeys ? PASS_COLOR : MUTED} fontSize="$2xs">
-                      • update: {canUpdateKeys ? 'GRANTED' : 'DENIED'}
-                    </Text>
-                    <Text color={canDeleteKeys ? PASS_COLOR : MUTED} fontSize="$2xs">
-                      • delete: {canDeleteKeys ? 'GRANTED' : 'DENIED'}
-                    </Text>
-                  </HStack>
-                </Box>
-
-                {/* Fetch from API button & Add Key Form (Gated by canCreateKeys) */}
+                {/* Key Management Actions */}
                 {canCreateKeys ? (
-                  <VStack space="sm" mb="$4">
-                    {/* Fetch Keys from API Button */}
+                  <VStack space="xs" mb="$3">
+                    {/* Primary Action: Fetch Keys from Server API */}
                     <Button
-                      variant="outline"
-                      borderColor={YELLOW}
+                      bg={YELLOW}
+                      borderRadius="$md"
+                      h={46}
                       onPress={fetchServerKeys}
                       isDisabled={isFetchingServerKeys}
                     >
                       {isFetchingServerKeys ? (
                         <HStack space="xs" alignItems="center">
-                          <ActivityIndicator size="small" color={YELLOW} />
-                          <ButtonText color={YELLOW} fontWeight="800" ml="$2">
+                          <ActivityIndicator size="small" color={BLACK} />
+                          <ButtonText color={BLACK} fontWeight="900" ml="$2">
                             Fetching Server Keys...
                           </ButtonText>
                         </HStack>
                       ) : (
                         <HStack space="xs" alignItems="center">
-                          <DownloadCloud size={16} color={YELLOW} />
-                          <ButtonText color={YELLOW} fontWeight="800" ml="$1">
+                          <DownloadCloud size={16} color={BLACK} />
+                          <ButtonText color={BLACK} fontWeight="900">
                             Fetch Public Keys from API
                           </ButtonText>
                         </HStack>
                       )}
                     </Button>
 
-                    {/* Public Key Action Buttons */}
-                    <HStack space="xs">
+                    {/* Secondary Actions: Scan QR & Import Modal */}
+                    <HStack space="xs" mt="$1">
                       <Button
                         flex={1}
-                        bg={keyQrScannerVisible ? YELLOW : 'rgba(250, 204, 21, 0.14)'}
-                        borderWidth={1}
-                        borderColor={YELLOW}
+                        variant="outline"
+                        borderColor={keyQrScannerVisible ? YELLOW : '#334155'}
+                        bg={keyQrScannerVisible ? 'rgba(250, 204, 21, 0.15)' : PANEL_ALT}
+                        h={42}
                         onPress={() => {
                           setKeyScanLock(false);
                           setIsKeyScannerTorchOn(false);
-                          setKeyQrScannerVisible(prev => !prev);
+                          setKeyQrScannerVisible((prev: boolean) => !prev);
                         }}
                       >
                         <HStack space="xs" alignItems="center">
-                          <QrCode size={16} color={keyQrScannerVisible ? BLACK : YELLOW} />
-                          <ButtonText color={keyQrScannerVisible ? BLACK : YELLOW} fontWeight="900" fontSize="$xs">
+                          <QrCode size={14} color={keyQrScannerVisible ? YELLOW : '#cbd5e1'} />
+                          <ButtonText color={keyQrScannerVisible ? YELLOW : '#cbd5e1'} fontSize="$xs" fontWeight="700">
                             {keyQrScannerVisible ? 'Close Camera' : 'Scan Key QR'}
                           </ButtonText>
                         </HStack>
@@ -776,36 +778,37 @@ ${k.x5c[0]}
                       <Button
                         flex={1}
                         variant="outline"
-                        borderColor={YELLOW}
-                        bg={keyValue.trim() ? 'rgba(34, 197, 94, 0.15)' : 'rgba(250, 204, 21, 0.08)'}
+                        borderColor="#334155"
+                        bg={PANEL_ALT}
+                        h={42}
                         onPress={() => setPublicKeyModalVisible(true)}
                       >
                         <HStack space="xs" alignItems="center">
-                          <Key size={16} color={YELLOW} />
-                          <ButtonText color={YELLOW} fontWeight="900" fontSize="$xs">
-                            {keyValue.trim() ? 'Review Key Modal' : 'Import / Manage Key'}
+                          <Key size={14} color={YELLOW} />
+                          <ButtonText color="#cbd5e1" fontSize="$xs" fontWeight="700">
+                            Import / Review
                           </ButtonText>
                         </HStack>
                       </Button>
                     </HStack>
 
-                    {keyQrScannerVisible ? (
+                    {/* Inline QR Camera Viewport */}
+                    {keyQrScannerVisible && (
                       <Box
                         bg={PANEL_ALT}
-                        borderWidth={2}
+                        borderWidth={1}
                         borderColor={YELLOW}
-                        borderRadius="$xl"
+                        borderRadius="$lg"
                         p="$3"
+                        mt="$2"
                       >
                         <Text color={MUTED} fontSize="$2xs" mb="$2" textAlign="center">
-                          Aim at Web App Public Key QR (<Text color={YELLOW} fontWeight="800">Clean Base64</Text>, <Text color={YELLOW} fontWeight="800">JSON</Text>, or <Text color={YELLOW} fontWeight="800">PEM</Text>)
+                          Scan Public Key QR (<Text color={YELLOW}>Clean Base64</Text>, <Text color={YELLOW}>JSON</Text>, or <Text color={YELLOW}>PEM</Text>)
                         </Text>
 
                         <Box
-                          h={250}
-                          borderWidth={2}
-                          borderColor={YELLOW}
-                          borderRadius="$lg"
+                          h={230}
+                          borderRadius="$md"
                           overflow="hidden"
                           bg="#050914"
                           position="relative"
@@ -820,94 +823,95 @@ ${k.x5c[0]}
                             />
                           ) : (
                             <VStack flex={1} alignItems="center" justifyContent="center" px="$4">
-                              <Text color="#f8fafc" fontSize="$sm" fontWeight="800" textAlign="center">
-                                Camera permission is required to scan Public Key QR codes.
+                              <Text color="#f8fafc" fontSize="$xs" fontWeight="800" textAlign="center">
+                                Camera permission required to scan keys.
                               </Text>
-                              <Button mt="$3" bg={YELLOW} size="sm" onPress={() => requestPermission()}>
+                              <Button mt="$3" bg={YELLOW} size="xs" onPress={() => requestPermission()}>
                                 <ButtonText color={BLACK} fontWeight="800">
-                                  Grant Camera Permission
+                                  Grant Permission
                                 </ButtonText>
                               </Button>
                             </VStack>
                           )}
 
-                          {permission?.granted ? (
+                          {permission?.granted && (
                             <Pressable
                               position="absolute"
-                              top={12}
-                              right={12}
+                              top={8}
+                              right={8}
                               zIndex={10}
-                              onPress={() => setIsKeyScannerTorchOn(prev => !prev)}
+                              onPress={() => setIsKeyScannerTorchOn((prev: boolean) => !prev)}
                               bg={isKeyScannerTorchOn ? YELLOW : 'rgba(5, 9, 20, 0.75)'}
-                              p="$2"
+                              p="$1.5"
                               borderRadius="$md"
-                              borderWidth={1}
-                              borderColor={isKeyScannerTorchOn ? YELLOW : 'rgba(255, 255, 255, 0.3)'}
-                              alignItems="center"
-                              justifyContent="center"
                             >
                               {isKeyScannerTorchOn ? (
-                                <Flashlight size={18} color={BLACK} />
+                                <Flashlight size={16} color={BLACK} />
                               ) : (
-                                <FlashlightOff size={18} color="#f8fafc" />
+                                <FlashlightOff size={16} color="#f8fafc" />
                               )}
                             </Pressable>
-                          ) : null}
+                          )}
 
                           <View style={styles.reticleOverlay} pointerEvents="none">
                             <View style={styles.reticleBox} />
                           </View>
                         </Box>
                       </Box>
-                    ) : null}
+                    )}
 
-                    <Text color={MUTED} fontSize="$2xs" textAlign="center">
-                      — OR PASTE KEY MANUALLY (JSON / BASE64 / PEM) —
-                    </Text>
-
-                    {scannedKeyFormat ? (
-                      <Box
-                        bg="rgba(34, 197, 94, 0.15)"
-                        borderWidth={1}
-                        borderColor={PASS_COLOR}
-                        borderRadius="$md"
-                        p="$2.5"
-                      >
-                        <Text color={PASS_COLOR} fontSize="$xs" fontWeight="800">
-                          ✓ QR Scanned ({scannedKeyFormat}) — Enter Key Alias below and tap &quot;+ Add Key&quot;
+                    {/* Manual Key Entry Collapsible Accordion */}
+                    <Pressable
+                      onPress={() => setShowManualKeyForm((prev: boolean) => !prev)}
+                      style={styles.expandToggle}
+                    >
+                      <HStack justifyContent="space-between" alignItems="center">
+                        <Text color={MUTED} fontSize="$2xs" fontWeight="700">
+                          {showManualKeyForm ? 'Hide Manual Entry Form' : '+ Add Key Manually (JSON / Base64 / PEM)'}
                         </Text>
-                      </Box>
-                    ) : null}
+                        {showManualKeyForm ? (
+                          <ChevronUp size={14} color={MUTED} />
+                        ) : (
+                          <ChevronDown size={14} color={MUTED} />
+                        )}
+                      </HStack>
+                    </Pressable>
 
-                    <Input variant="outline" size="sm" borderColor={scannedKeyFormat && !keyName.trim() ? YELLOW : '#334155'}>
-                      <InputField
-                        value={keyName}
-                        onChangeText={setKeyName}
-                        placeholder="Enter Key alias (e.g. Master Verification Key) *"
-                        placeholderTextColor="#64748b"
-                        color="#f8fafc"
-                      />
-                    </Input>
-                    <Input variant="outline" size="sm" borderColor="#334155">
-                      <InputField
-                        value={keyValue}
-                        onChangeText={setKeyValue}
-                        placeholder="Paste Clean Base64, Standard PEM, or JSON Key Bundle..."
-                        placeholderTextColor="#64748b"
-                        color="#f8fafc"
-                        multiline
-                        numberOfLines={4}
-                        minHeight={80}
-                      />
-                    </Input>
-                    <Button bg={YELLOW} borderRadius="$md" onPress={saveKey}>
-                      <ButtonText color={BLACK} fontWeight="900">
-                        + Add Key
-                      </ButtonText>
-                    </Button>
+                    {showManualKeyForm && (
+                      <Box bg={PANEL_ALT} p="$3" borderRadius="$lg" borderWidth={1} borderColor="#334155" mt="$1">
+                        <VStack space="xs">
+                          <Input variant="outline" size="sm" borderColor="#334155">
+                            <InputField
+                              value={keyName}
+                              onChangeText={setKeyName}
+                              placeholder="Key Alias (e.g. Master Verification Key) *"
+                              placeholderTextColor="#64748b"
+                              color="#f8fafc"
+                            />
+                          </Input>
+                          <Input variant="outline" size="sm" borderColor="#334155">
+                            <InputField
+                              value={keyValue}
+                              onChangeText={setKeyValue}
+                              placeholder="Paste Clean Base64, Standard PEM, or JSON..."
+                              placeholderTextColor="#64748b"
+                              color="#f8fafc"
+                              multiline
+                              numberOfLines={4}
+                              minHeight={80}
+                            />
+                          </Input>
+                          <Button bg={YELLOW} borderRadius="$md" mt="$1" onPress={saveKey}>
+                            <ButtonText color={BLACK} fontWeight="900" fontSize="$xs">
+                              + Save Key to Keystore
+                            </ButtonText>
+                          </Button>
+                        </VStack>
+                      </Box>
+                    )}
                   </VStack>
                 ) : (
-                  <Box bg="rgba(148, 163, 184, 0.08)" p="$3" borderRadius="$md" mb="$4" borderWidth={1} borderColor="#334155">
+                  <Box bg="rgba(148, 163, 184, 0.08)" p="$3" borderRadius="$md" mb="$3" borderWidth={1} borderColor="#334155">
                     <HStack space="xs" alignItems="center">
                       <Lock size={14} color={MUTED} />
                       <Text color={MUTED} fontSize="$xs">
@@ -917,229 +921,307 @@ ${k.x5c[0]}
                   </Box>
                 )}
 
-                {/* Keys List */}
-                <VStack space="xs">
-                  {publicKeys.map(k => (
-                    <HStack
-                      key={k.id}
-                      justifyContent="space-between"
-                      alignItems="center"
-                      borderTopWidth={1}
-                      borderTopColor="#334155"
-                      py="$3"
-                    >
-                      <VStack flex={1} mr="$2">
-                        <Text color="#f8fafc" fontWeight="700">
-                          {k.name}
-                        </Text>
-                        <Text color={MUTED} fontSize="$xs" numberOfLines={1}>
-                          ID: {k.id} · {k.public_key_string.slice(0, 40)}...
-                        </Text>
-                      </VStack>
+                {/* Public Keys List */}
+                <VStack space="xs" mt="$1">
+                  {publicKeys.length > 0 ? (
+                    publicKeys.map((k: PublicKeyRecord) => (
+                      <Box
+                        key={k.id}
+                        bg={PANEL_ALT}
+                        p="$3"
+                        borderRadius="$lg"
+                        borderWidth={1}
+                        borderColor="#1e293b"
+                        mb="$1"
+                      >
+                        <HStack justifyContent="space-between" alignItems="center">
+                          <VStack flex={1} mr="$2">
+                            <HStack space="xs" alignItems="center">
+                              <Text color="#f8fafc" fontWeight="800" fontSize="$sm">
+                                {k.name}
+                              </Text>
+                              <Box bg="rgba(255, 255, 255, 0.06)" px="$1.5" py="$0.5" borderRadius="$sm">
+                                <Text color={MUTED} fontSize="$2xs" fontWeight="700">
+                                  #{k.id}
+                                </Text>
+                              </Box>
+                            </HStack>
+                            <Text color="#64748b" fontSize="$2xs" mt="$1" numberOfLines={1}>
+                              {k.public_key_string.slice(0, 42)}...
+                            </Text>
+                          </VStack>
 
-                      {/* Edit/Delete Actions gated by permissions */}
-                      <HStack space="xs">
-                        {canUpdateKeys ? (
-                          <Pressable
-                            onPress={() => {
-                              setEditingKey(k);
-                              setEditKeyName(k.name);
-                              setEditKeyValue(k.public_key_string);
-                            }}
-                            style={styles.actionBtn}
-                          >
-                            <Pencil size={16} color={YELLOW} />
-                          </Pressable>
-                        ) : null}
+                          <HStack space="xs">
+                            {canUpdateKeys ? (
+                              <Pressable
+                                onPress={() => {
+                                  setEditingKey(k);
+                                  setEditKeyName(k.name);
+                                  setEditKeyValue(k.public_key_string);
+                                }}
+                                style={styles.actionBtn}
+                              >
+                                <Pencil size={15} color={YELLOW} />
+                              </Pressable>
+                            ) : null}
 
-                        {canDeleteKeys ? (
-                          <Pressable onPress={() => confirmDeleteKey(k)} style={styles.actionBtn}>
-                            <Trash2 size={16} color="#f87171" />
-                          </Pressable>
-                        ) : null}
-                      </HStack>
-                    </HStack>
-                  ))}
-                  {!publicKeys.length ? (
+                            {canDeleteKeys ? (
+                              <Pressable onPress={() => confirmDeleteKey(k)} style={styles.actionBtn}>
+                                <Trash2 size={15} color={FAIL_COLOR} />
+                              </Pressable>
+                            ) : null}
+                          </HStack>
+                        </HStack>
+                      </Box>
+                    ))
+                  ) : (
                     <Text color={MUTED} fontSize="$xs" py="$4" textAlign="center">
-                      No keys saved in SQLite yet.
+                      No public keys saved in SQLite yet.
                     </Text>
-                  ) : null}
+                  )}
                 </VStack>
               </Box>
             )
-          ) : null}
+          )}
 
           {/* ======================================================== */}
-          {/* TAB 3: NETWORK / API & HTTPS ROOT CA */}
+          {/* TAB 3: SERVER API & HTTPS ROOT CA */}
           {/* ======================================================== */}
-          {activeTab === 'NETWORK' ? (
-            <Box borderWidth={2} borderColor={YELLOW} borderRadius="$xl" bg={PANEL} p="$4">
-              <HStack justifyContent="space-between" alignItems="center" mb="$1">
-                <Text color="#f8fafc" fontSize="$lg" fontWeight="800">
-                  Server API & HTTPS Root CA
-                </Text>
+          {activeTab === 'NETWORK' && (
+            <Box borderRadius="$xl" bg={PANEL} borderWidth={1} borderColor={BORDER} p="$4">
+              {/* Header */}
+              <HStack justifyContent="space-between" alignItems="center" mb="$2">
+                <VStack flex={1}>
+                  <Text color="#f8fafc" fontSize="$md" fontWeight="800">
+                    Server API &amp; HTTPS Root CA
+                  </Text>
+                  <Text color={MUTED} fontSize="$2xs">
+                    Configure the backend endpoint and trusted certificate.
+                  </Text>
+                </VStack>
+
                 <Box
-                  bg={
-                    serverUrl.trim().toLowerCase().startsWith('https://')
-                      ? 'rgba(34, 197, 94, 0.2)'
-                      : 'rgba(250, 204, 21, 0.15)'
-                  }
+                  bg={isHttps ? 'rgba(34, 197, 94, 0.12)' : 'rgba(250, 204, 21, 0.12)'}
                   px="$2"
-                  py="$1"
-                  borderRadius="$sm"
+                  py="$0.5"
+                  borderRadius="$full"
                   borderWidth={1}
-                  borderColor={
-                    serverUrl.trim().toLowerCase().startsWith('https://') ? PASS_COLOR : YELLOW
-                  }
+                  borderColor={isHttps ? 'rgba(34, 197, 94, 0.3)' : 'rgba(250, 204, 21, 0.3)'}
                 >
                   <Text
-                    color={
-                      serverUrl.trim().toLowerCase().startsWith('https://') ? PASS_COLOR : YELLOW
-                    }
+                    color={isHttps ? PASS_COLOR : YELLOW}
                     fontSize="$2xs"
                     fontWeight="900"
                   >
-                    {serverUrl.trim().toLowerCase().startsWith('https://') ? 'HTTPS TLS' : 'HTTP'}
+                    {isHttps ? 'HTTPS TLS' : 'HTTP'}
                   </Text>
                 </Box>
               </HStack>
 
-              <Text color={MUTED} fontSize="$xs" mb="$3">
-                Supports both <Text color={PASS_COLOR} fontWeight="700">https://</Text> and <Text color={YELLOW} fontWeight="700">http://</Text> endpoints. For self-signed or private HTTPS servers, paste or scan your Root CA certificate below.
-              </Text>
+              {/* Protocol Selector (HTTPS | HTTP) */}
+              <VStack space="xs" mb="$3">
+                <Text color={MUTED} fontSize="$2xs" fontWeight="700">
+                  PROTOCOL:
+                </Text>
+                <HStack space="xs">
+                  <Pressable
+                    flex={1}
+                    py="$2"
+                    borderRadius="$md"
+                    bg={isHttps ? 'rgba(34, 197, 94, 0.15)' : PANEL_ALT}
+                    borderWidth={1}
+                    borderColor={isHttps ? PASS_COLOR : '#334155'}
+                    alignItems="center"
+                    onPress={() => {
+                      const stripped = serverUrl.trim().replace(/^https?:\/\//i, '');
+                      setServerUrl(`https://${stripped}`);
+                    }}
+                  >
+                    <HStack space="2xs" alignItems="center">
+                      <ShieldCheck size={14} color={isHttps ? PASS_COLOR : MUTED} />
+                      <Text
+                        color={isHttps ? PASS_COLOR : MUTED}
+                        fontWeight="800"
+                        fontSize="$xs"
+                      >
+                        Secure HTTPS
+                      </Text>
+                    </HStack>
+                  </Pressable>
 
-              {/* Quick Protocol & Preset Switcher */}
-              <HStack space="xs" mb="$2" flexWrap="wrap">
-                <Button
-                  size="xs"
-                  variant="outline"
-                  borderColor={PASS_COLOR}
-                  bg={serverUrl.trim().toLowerCase().startsWith('https://') ? 'rgba(34, 197, 94, 0.2)' : 'transparent'}
-                  onPress={() => {
-                    const stripped = serverUrl.trim().replace(/^https?:\/\//i, '');
-                    setServerUrl(`https://${stripped}`);
-                  }}
-                >
-                  <ButtonText color={PASS_COLOR} fontSize="$2xs" fontWeight="900">
-                    Use https://
-                  </ButtonText>
-                </Button>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  borderColor={YELLOW}
-                  bg={serverUrl.trim().toLowerCase().startsWith('http://') ? 'rgba(250, 204, 21, 0.15)' : 'transparent'}
-                  onPress={() => {
-                    const stripped = serverUrl.trim().replace(/^https?:\/\//i, '');
-                    setServerUrl(`http://${stripped}`);
-                  }}
-                >
-                  <ButtonText color={YELLOW} fontSize="$2xs" fontWeight="900">
-                    Use http://
-                  </ButtonText>
-                </Button>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  borderColor="#38bdf8"
-                  bg={serverUrl.includes('talhahub.io') ? 'rgba(56, 189, 248, 0.2)' : 'transparent'}
-                  onPress={() => {
-                    setServerUrl('https://veriflow.talhahub.io/api');
-                  }}
-                >
-                  <ButtonText color="#38bdf8" fontSize="$2xs" fontWeight="900">
-                    Preset: talhahub.io
-                  </ButtonText>
-                </Button>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  borderColor="#94a3b8"
-                  bg={serverUrl.includes('10.0.2.2') ? 'rgba(148, 163, 184, 0.2)' : 'transparent'}
-                  onPress={() => {
-                    setServerUrl('http://10.0.2.2:8000');
-                  }}
-                >
-                  <ButtonText color="#cbd5e1" fontSize="$2xs" fontWeight="900">
-                    Preset: 10.0.2.2
-                  </ButtonText>
-                </Button>
-              </HStack>
+                  <Pressable
+                    flex={1}
+                    py="$2"
+                    borderRadius="$md"
+                    bg={!isHttps ? 'rgba(250, 204, 21, 0.12)' : PANEL_ALT}
+                    borderWidth={1}
+                    borderColor={!isHttps ? YELLOW : '#334155'}
+                    alignItems="center"
+                    onPress={() => {
+                      const stripped = serverUrl.trim().replace(/^https?:\/\//i, '');
+                      setServerUrl(`http://${stripped}`);
+                    }}
+                  >
+                    <Text
+                      color={!isHttps ? YELLOW : MUTED}
+                      fontWeight="800"
+                      fontSize="$xs"
+                    >
+                      HTTP (Insecure)
+                    </Text>
+                  </Pressable>
+                </HStack>
+              </VStack>
 
-              <Input variant="outline" size="md" borderColor="#334155" mb="$4">
-                <InputField
-                  value={serverUrl}
-                  onChangeText={setServerUrl}
-                  placeholder="https://veriflow.talhahub.io/api or http://10.0.2.2:8000"
-                  placeholderTextColor="#64748b"
-                  color="#f8fafc"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-              </Input>
+              {/* Server Presets */}
+              <VStack space="xs" mb="$3">
+                <Text color={MUTED} fontSize="$2xs" fontWeight="700">
+                  SERVER PRESETS:
+                </Text>
+                <HStack space="xs">
+                  <Button
+                    flex={1}
+                    size="xs"
+                    variant="outline"
+                    borderColor={serverUrl.includes('talhahub.io') ? '#38bdf8' : '#334155'}
+                    bg={serverUrl.includes('talhahub.io') ? 'rgba(56, 189, 248, 0.15)' : PANEL_ALT}
+                    onPress={() => setServerUrl('https://veriflow.talhahub.io/api')}
+                  >
+                    <ButtonText
+                      color={serverUrl.includes('talhahub.io') ? '#38bdf8' : '#cbd5e1'}
+                      fontSize="$2xs"
+                      fontWeight="800"
+                    >
+                      talhahub.io (Production)
+                    </ButtonText>
+                  </Button>
+
+                  <Button
+                    flex={1}
+                    size="xs"
+                    variant="outline"
+                    borderColor={serverUrl.includes('10.0.2.2') ? YELLOW : '#334155'}
+                    bg={serverUrl.includes('10.0.2.2') ? 'rgba(250, 204, 21, 0.1)' : PANEL_ALT}
+                    onPress={() => setServerUrl('http://10.0.2.2:8000')}
+                  >
+                    <ButtonText
+                      color={serverUrl.includes('10.0.2.2') ? YELLOW : '#cbd5e1'}
+                      fontSize="$2xs"
+                      fontWeight="800"
+                    >
+                      10.0.2.2 (Emulator)
+                    </ButtonText>
+                  </Button>
+                </HStack>
+              </VStack>
+
+              {/* API URL Input */}
+              <VStack space="xs" mb="$3">
+                <Text color={MUTED} fontSize="$2xs" fontWeight="700">
+                  API BASE URL:
+                </Text>
+                <Input variant="outline" size="md" borderColor="#334155">
+                  <InputField
+                    value={serverUrl}
+                    onChangeText={setServerUrl}
+                    placeholder="https://veriflow.talhahub.io/api"
+                    placeholderTextColor="#64748b"
+                    color="#f8fafc"
+                    keyboardType="url"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </Input>
+              </VStack>
 
               {/* ROOT CA CERTIFICATE SECTION */}
               <Box
                 bg={PANEL_ALT}
-                p="$3"
+                p="$3.5"
                 borderRadius="$lg"
                 borderWidth={1}
                 borderColor={rootCaCert ? PASS_COLOR : '#334155'}
                 mb="$4"
               >
-                <HStack justifyContent="space-between" alignItems="center" mb="$2">
+                <HStack justifyContent="space-between" alignItems="center" mb="$1">
                   <HStack space="xs" alignItems="center">
                     <ShieldCheck size={16} color={rootCaCert ? PASS_COLOR : YELLOW} />
                     <Text color="#f8fafc" fontSize="$sm" fontWeight="800">
-                      Root CA Certificate (HTTPS)
+                      Root CA Certificate
                     </Text>
                   </HStack>
-                  <Text
-                    color={rootCaCert ? PASS_COLOR : MUTED}
-                    fontSize="$2xs"
-                    fontWeight="900"
+
+                  <Box
+                    bg={rootCaCert ? 'rgba(34, 197, 94, 0.15)' : 'rgba(148, 163, 184, 0.1)'}
+                    px="$2"
+                    py="$0.5"
+                    borderRadius="$full"
                   >
-                    {rootCaCert ? 'CUSTOM CA ACTIVE' : 'SYSTEM CA ONLY'}
-                  </Text>
+                    <Text
+                      color={rootCaCert ? PASS_COLOR : MUTED}
+                      fontSize="$2xs"
+                      fontWeight="800"
+                    >
+                      {rootCaCert
+                        ? 'Custom CA Active'
+                        : rootCaInput.trim()
+                        ? 'Draft Pending'
+                        : 'System Only'}
+                    </Text>
+                  </Box>
                 </HStack>
 
-                <Text color={MUTED} fontSize="$2xs" mb="$2.5">
-                  Scan or paste your Root CA certificate (<Text color={YELLOW}>-----BEGIN CERTIFICATE-----</Text>, Clean Base64, or JSON) so Android trusts your HTTPS server.
+                <Text color={MUTED} fontSize="$2xs" mb="$3" lineHeight={16}>
+                  Configure a trusted Root CA when connecting to a private or self-signed HTTPS server.
                 </Text>
 
-                <Button
-                  size="sm"
-                  bg={caQrScannerVisible ? YELLOW : 'rgba(250, 204, 21, 0.14)'}
-                  borderWidth={1}
-                  borderColor={YELLOW}
-                  mb="$2.5"
-                  onPress={() => {
-                    setCaScanLock(false);
-                    setIsKeyScannerTorchOn(false);
-                    setCaQrScannerVisible(prev => !prev);
-                  }}
-                >
-                  <HStack space="xs" alignItems="center">
-                    <QrCode size={15} color={caQrScannerVisible ? BLACK : YELLOW} />
-                    <ButtonText color={caQrScannerVisible ? BLACK : YELLOW} fontSize="$xs" fontWeight="900">
-                      {caQrScannerVisible
-                        ? 'Close Root CA QR Camera'
-                        : 'Scan Root CA QR (Auto-Detect JSON / Base64 / PEM)'}
-                    </ButtonText>
-                  </HStack>
-                </Button>
+                {/* Root CA Actions */}
+                <HStack space="xs">
+                  <Button
+                    flex={1}
+                    size="xs"
+                    variant="outline"
+                    borderColor={caQrScannerVisible ? YELLOW : '#334155'}
+                    bg={caQrScannerVisible ? 'rgba(250, 204, 21, 0.15)' : PANEL}
+                    h={40}
+                    onPress={() => {
+                      setCaScanLock(false);
+                      setIsKeyScannerTorchOn(false);
+                      setCaQrScannerVisible((prev: boolean) => !prev);
+                    }}
+                  >
+                    <HStack space="xs" alignItems="center">
+                      <QrCode size={14} color={caQrScannerVisible ? YELLOW : '#cbd5e1'} />
+                      <ButtonText color={caQrScannerVisible ? YELLOW : '#cbd5e1'} fontSize="$xs" fontWeight="700">
+                        {caQrScannerVisible ? 'Close Camera' : 'Scan Root CA QR'}
+                      </ButtonText>
+                    </HStack>
+                  </Button>
 
-                {caQrScannerVisible ? (
+                  <Button
+                    flex={1}
+                    size="xs"
+                    bg={YELLOW}
+                    h={40}
+                    onPress={() => setRootCaModalVisible(true)}
+                  >
+                    <ButtonText color={BLACK} fontSize="$xs" fontWeight="900">
+                      Manage Certificate
+                    </ButtonText>
+                  </Button>
+                </HStack>
+
+                {/* Inline Root CA Camera Viewport */}
+                {caQrScannerVisible && (
                   <Box
-                    h={240}
-                    borderWidth={2}
-                    borderColor={YELLOW}
-                    borderRadius="$lg"
+                    h={220}
+                    borderRadius="$md"
                     overflow="hidden"
                     bg="#050914"
                     position="relative"
-                    mb="$2.5"
+                    borderWidth={1}
+                    borderColor={YELLOW}
+                    mt="$3"
                   >
                     {permission?.granted ? (
                       <CameraView
@@ -1151,88 +1233,48 @@ ${k.x5c[0]}
                       />
                     ) : (
                       <VStack flex={1} alignItems="center" justifyContent="center" px="$4">
-                        <Text color="#f8fafc" fontSize="$sm" fontWeight="800" textAlign="center">
-                          Camera permission is required to scan Root CA QR codes.
+                        <Text color="#f8fafc" fontSize="$xs" fontWeight="800" textAlign="center">
+                          Camera permission required.
                         </Text>
-                        <Button mt="$3" bg={YELLOW} size="sm" onPress={() => requestPermission()}>
+                        <Button mt="$2" bg={YELLOW} size="xs" onPress={() => requestPermission()}>
                           <ButtonText color={BLACK} fontWeight="800">
-                            Grant Camera Permission
+                            Grant Permission
                           </ButtonText>
                         </Button>
                       </VStack>
                     )}
 
-                    {permission?.granted ? (
+                    {permission?.granted && (
                       <Pressable
                         position="absolute"
-                        top={12}
-                        right={12}
+                        top={8}
+                        right={8}
                         zIndex={10}
-                        onPress={() => setIsKeyScannerTorchOn(prev => !prev)}
+                        onPress={() => setIsKeyScannerTorchOn((prev: boolean) => !prev)}
                         bg={isKeyScannerTorchOn ? YELLOW : 'rgba(5, 9, 20, 0.75)'}
-                        p="$2"
+                        p="$1.5"
                         borderRadius="$md"
-                        borderWidth={1}
-                        borderColor={isKeyScannerTorchOn ? YELLOW : 'rgba(255, 255, 255, 0.3)'}
-                        alignItems="center"
-                        justifyContent="center"
                       >
                         {isKeyScannerTorchOn ? (
-                          <Flashlight size={18} color={BLACK} />
+                          <Flashlight size={16} color={BLACK} />
                         ) : (
-                          <FlashlightOff size={18} color="#f8fafc" />
+                          <FlashlightOff size={16} color="#f8fafc" />
                         )}
                       </Pressable>
-                    ) : null}
+                    )}
 
                     <View style={styles.reticleOverlay} pointerEvents="none">
                       <View style={styles.reticleBox} />
                     </View>
                   </Box>
-                ) : null}
-
-                {scannedCaFormat ? (
-                  <Box
-                    bg="rgba(34, 197, 94, 0.15)"
-                    borderWidth={1}
-                    borderColor={PASS_COLOR}
-                    borderRadius="$md"
-                    p="$2"
-                    mb="$2"
-                  >
-                    <Text color={PASS_COLOR} fontSize="$2xs" fontWeight="800">
-                      ✓ Root CA QR Scanned ({scannedCaFormat}) — open the manager to review and Apply
-                    </Text>
-                  </Box>
-                ) : null}
-
-                <Text
-                  color={rootCaCert ? PASS_COLOR : rootCaInput.trim() ? YELLOW : MUTED}
-                  fontSize="$2xs"
-                  fontWeight="700"
-                  mb="$2"
-                >
-                  {rootCaCert
-                    ? '✓ Custom Root CA applied'
-                    : rootCaInput.trim()
-                    ? '• Draft pending — open manager and Apply'
-                    : '• No custom Root CA (system CAs only)'}
-                </Text>
-
-                <Button
-                  size="sm"
-                  bg={YELLOW}
-                  onPress={() => setRootCaModalVisible(true)}
-                >
-                  <ButtonText color={BLACK} fontSize="$xs" fontWeight="900">
-                    Manage Root CA Certificate
-                  </ButtonText>
-                </Button>
+                )}
               </Box>
 
+              {/* Primary Action: Save Server Configuration */}
               <Button
                 bg={YELLOW}
                 borderRadius="$md"
+                h={48}
                 onPress={async () => {
                   try {
                     const normalizedUrl = normalizeApiBaseUrl(serverUrl);
@@ -1263,61 +1305,61 @@ ${k.x5c[0]}
                   }
                 }}
               >
-                <ButtonText color={BLACK} fontWeight="900">
-                  Save Server & Root CA Configuration
+                <ButtonText color={BLACK} fontWeight="900" fontSize="$sm">
+                  Save Server Configuration
                 </ButtonText>
               </Button>
             </Box>
-          ) : null}
+          )}
 
           {/* ======================================================== */}
-          {/* DANGER ZONE: DELETE ALL LOCAL SQLITE DATA */}
+          {/* ISOLATED DANGER ZONE: DELETE ALL LOCAL SQLITE DATA */}
           {/* ======================================================== */}
           <Box
-            borderWidth={2}
-            borderColor={canDeleteAllData ? FAIL_COLOR : '#334155'}
+            borderWidth={1}
+            borderColor={canDeleteAllData ? 'rgba(239, 68, 68, 0.4)' : '#1e293b'}
             borderRadius="$xl"
             bg={PANEL}
             p="$4"
+            mt="$2"
           >
             <HStack justifyContent="space-between" alignItems="center" mb="$1">
               <HStack space="xs" alignItems="center">
-                <Trash2 size={18} color={canDeleteAllData ? FAIL_COLOR : MUTED} />
-                <Text color="#f8fafc" fontSize="$md" fontWeight="800">
+                <Trash2 size={16} color={canDeleteAllData ? FAIL_COLOR : MUTED} />
+                <Text color="#f8fafc" fontSize="$sm" fontWeight="800">
                   Local SQLite Data Reset
                 </Text>
               </HStack>
               <Box
-                bg={canDeleteAllData ? 'rgba(239, 68, 68, 0.2)' : 'rgba(148, 163, 184, 0.12)'}
+                bg={canDeleteAllData ? 'rgba(239, 68, 68, 0.15)' : 'rgba(148, 163, 184, 0.1)'}
                 px="$2"
-                py="$1"
-                borderRadius="$sm"
-                borderWidth={1}
-                borderColor={canDeleteAllData ? FAIL_COLOR : '#475569'}
+                py="$0.5"
+                borderRadius="$full"
               >
                 <Text
-                  color={canDeleteAllData ? '#f87171' : MUTED}
+                  color={canDeleteAllData ? FAIL_COLOR : MUTED}
                   fontSize="$2xs"
                   fontWeight="900"
                 >
-                  {canDeleteAllData ? 'user.delete_all_data: GRANTED' : 'user.delete_all_data: DENIED'}
+                  {canDeleteAllData ? 'AUTHORIZED' : 'LOCKED'}
                 </Text>
               </Box>
             </HStack>
 
-            <Text color={MUTED} fontSize="$xs" mb="$3">
-              Permanently wipe all local SQLite tables (scan queue, inventory rules, and cached public keys) from this device.
+            <Text color={MUTED} fontSize="$2xs" mb="$3">
+              Permanently wipe local SQLite tables (scan queue, rules, and cached public keys) from this device.
             </Text>
 
             {canDeleteAllData ? (
               <Button
                 bg={FAIL_COLOR}
                 borderRadius="$md"
+                h={44}
                 onPress={confirmDeleteAllData}
               >
                 <HStack space="xs" alignItems="center">
-                  <Trash2 size={16} color="#ffffff" />
-                  <ButtonText color="#ffffff" fontWeight="900">
+                  <Trash2 size={14} color="#ffffff" />
+                  <ButtonText color="#ffffff" fontWeight="900" fontSize="$xs">
                     Delete All SQLite Data
                   </ButtonText>
                 </HStack>
@@ -1325,8 +1367,8 @@ ${k.x5c[0]}
             ) : (
               <HStack space="xs" alignItems="center" justifyContent="space-between">
                 <HStack space="xs" alignItems="center" flex={1}>
-                  <Lock size={14} color={MUTED} />
-                  <Text color={MUTED} fontSize="$xs">
+                  <Lock size={13} color={MUTED} />
+                  <Text color={MUTED} fontSize="$2xs">
                     Requires &quot;user.delete_all_data&quot; permission.
                   </Text>
                 </HStack>
@@ -1356,7 +1398,7 @@ ${k.x5c[0]}
             )}
           </Box>
         </VStack>
-      </Box>
+      </ScrollView>
 
       {/* Edit Rule Modal */}
       <Modal
@@ -1366,8 +1408,8 @@ ${k.x5c[0]}
         onRequestClose={() => setEditingRule(null)}
       >
         <View style={styles.modalBackdrop}>
-          <Box bg={PANEL} borderWidth={2} borderColor={YELLOW} borderRadius="$xl" p="$4" width="100%" maxWidth={480}>
-            <Text color={YELLOW} fontSize="$lg" fontWeight="900" mb="$3">
+          <Box bg={PANEL} borderWidth={1} borderColor={BORDER} borderRadius="$xl" p="$4" width="100%" maxWidth={460}>
+            <Text color={YELLOW} fontSize="$md" fontWeight="900" mb="$3">
               Edit Inventory Rule
             </Text>
             <VStack space="sm">
@@ -1396,7 +1438,7 @@ ${k.x5c[0]}
                 />
               </Input>
               <HStack space="sm" justifyContent="flex-end" mt="$2">
-                <Button variant="outline" borderColor="#64748b" onPress={() => setEditingRule(null)}>
+                <Button variant="outline" borderColor="#475569" onPress={() => setEditingRule(null)}>
                   <ButtonText color="#cbd5e1">Cancel</ButtonText>
                 </Button>
                 <Button bg={YELLOW} onPress={saveEditRule}>
@@ -1418,8 +1460,8 @@ ${k.x5c[0]}
         onRequestClose={() => setEditingKey(null)}
       >
         <View style={styles.modalBackdrop}>
-          <Box bg={PANEL} borderWidth={2} borderColor={YELLOW} borderRadius="$xl" p="$4" width="100%" maxWidth={480}>
-            <Text color={YELLOW} fontSize="$lg" fontWeight="900" mb="$3">
+          <Box bg={PANEL} borderWidth={1} borderColor={BORDER} borderRadius="$xl" p="$4" width="100%" maxWidth={460}>
+            <Text color={YELLOW} fontSize="$md" fontWeight="900" mb="$3">
               Edit Public Key
             </Text>
             <VStack space="sm">
@@ -1443,7 +1485,7 @@ ${k.x5c[0]}
                 />
               </Input>
               <HStack space="sm" justifyContent="flex-end" mt="$2">
-                <Button variant="outline" borderColor="#64748b" onPress={() => setEditingKey(null)}>
+                <Button variant="outline" borderColor="#475569" onPress={() => setEditingKey(null)}>
                   <ButtonText color="#cbd5e1">Cancel</ButtonText>
                 </Button>
                 <Button bg={YELLOW} onPress={saveEditKey}>
@@ -1457,7 +1499,7 @@ ${k.x5c[0]}
         </View>
       </Modal>
 
-      {/* Root CA Manager Modal (large viewer/editor) */}
+      {/* Root CA Manager Modal */}
       <RootCaModal
         visible={rootCaModalVisible}
         value={rootCaInput}
@@ -1482,7 +1524,7 @@ ${k.x5c[0]}
         }}
       />
 
-      {/* Public Key Manager & Import Modal (Separate QR Review & SQLite Storage) */}
+      {/* Public Key Manager Modal */}
       <PublicKeyModal
         visible={publicKeyModalVisible}
         alias={keyName}
@@ -1517,37 +1559,45 @@ ${k.x5c[0]}
           );
         }}
       />
-    </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
   actionBtn: {
-    width: 34,
-    height: 34,
+    width: 32,
+    height: 32,
     borderRadius: 6,
     backgroundColor: '#111c2e',
+    borderWidth: 1,
+    borderColor: '#334155',
     alignItems: 'center',
     justifyContent: 'center',
   },
+  expandToggle: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#1e293b',
+  },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(2, 6, 23, 0.82)',
+    backgroundColor: 'rgba(2, 6, 23, 0.85)',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 20,
   },
   reticleOverlay: {
-    ...StyleSheet.absoluteFill,
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
   },
   reticleBox: {
-    width: 165,
-    height: 165,
+    width: 160,
+    height: 160,
     borderWidth: 2,
     borderColor: YELLOW,
-    borderRadius: 16,
+    borderRadius: 14,
     borderStyle: 'dashed',
   },
 });

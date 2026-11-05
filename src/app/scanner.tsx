@@ -1,5 +1,3 @@
-import ScannerPage from '@/Pages/ScannerPage';
+import ScannerPage from '../Pages/ScannerPage';
 
-export default function ScannerRoute() {
-  return <ScannerPage />;
-}
+export default ScannerPage;
