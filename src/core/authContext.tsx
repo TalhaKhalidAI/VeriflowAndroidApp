@@ -14,6 +14,7 @@ export interface RefreshPermissionsResult {
 interface AuthContextType {
   session: ShiftSession | null;
   isLoggedIn: boolean;
+  isShiftExpired: boolean;
   isLoading: boolean;
   apiBaseUrl: string;
   setApiBaseUrl: (url: string) => Promise<void>;
@@ -73,12 +74,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const savedSessionJson = await getAppSetting('active_session', '');
         if (savedSessionJson) {
           const parsed: ShiftSession = JSON.parse(savedSessionJson);
-          const nowSec = Math.floor(Date.now() / 1000);
-          if (parsed.exp && parsed.exp > nowSec) {
-            setSession(parsed);
-          } else {
-            await setAppSetting('active_session', '');
-          }
+          // Always restore active shift session even if expired so operator
+          // can review history, sync pending records, and complete checkout.
+          setSession(parsed);
         }
       } catch (e) {
         console.warn('Failed restoring auth session:', e);
@@ -466,11 +464,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await setAppSetting('active_session', '');
   }, []);
 
+  const isShiftExpired = Boolean(
+    session?.exp && Math.floor(Date.now() / 1000) >= session.exp
+  );
+
   return (
     <AuthContext.Provider
       value={{
         session,
-        isLoggedIn: Boolean(session && session.exp > Math.floor(Date.now() / 1000)),
+        isLoggedIn: Boolean(session),
+        isShiftExpired,
         isLoading,
         apiBaseUrl,
         setApiBaseUrl,

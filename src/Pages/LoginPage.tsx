@@ -75,7 +75,7 @@ export default function LoginPage() {
   const [permission, requestPermission] = useCameraPermissions();
   const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
   const { height } = useWindowDimensions();
-  const cameraBoxHeight = Math.min(290, Math.max(210, height * 0.32));
+  const cameraBoxHeight = Math.min(300, Math.max(240, height * 0.34));
 
   const [publicKeys, setPublicKeys] = useState<PublicKeyRecord[]>([]);
   const [selectedKeyId, setSelectedKeyId] = useState<number | null>(null);
@@ -946,14 +946,11 @@ export default function LoginPage() {
             )}
 
             {/* Camera Viewport Container */}
-            <Box
-              h={cameraBoxHeight}
-              borderRadius="$lg"
-              overflow="hidden"
-              bg="#050914"
-              position="relative"
-              borderWidth={1}
-              borderColor="#334155"
+            <View
+              style={[
+                styles.cameraContainer,
+                { height: cameraBoxHeight }
+              ]}
             >
               {permission?.granted ? (
                 <CameraView
@@ -1049,7 +1046,7 @@ export default function LoginPage() {
                   </Text>
                 </Box>
               )}
-            </Box>
+            </View>
 
             <Text color={MUTED} fontSize="$xs" textAlign="center" mt="$2.5">
               Align your shift badge QR code inside the frame.
@@ -1290,7 +1287,8 @@ export default function LoginPage() {
         animationType="fade"
         onRequestClose={() => setKeyPickerVisible(false)}
       >
-        <Pressable style={styles.modalBackdrop} onPress={() => setKeyPickerVisible(false)}>
+        <View style={styles.modalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setKeyPickerVisible(false)} />
           <Box
             bg={PANEL}
             borderWidth={1}
@@ -1299,6 +1297,7 @@ export default function LoginPage() {
             p="$4"
             width="100%"
             maxWidth={460}
+            zIndex={10}
           >
             <HStack justifyContent="space-between" alignItems="center" mb="$3">
               <Text color={YELLOW} fontSize="$md" fontWeight="900">
@@ -1372,7 +1371,7 @@ export default function LoginPage() {
               <ButtonText color="#cbd5e1">Close</ButtonText>
             </Button>
           </Box>
-        </Pressable>
+        </View>
       </Modal>
 
       {/* Public Key Import Modal */}
@@ -1638,48 +1637,65 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 6,
   },
+  cameraContainer: {
+    width: '100%',
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: '#050914',
+    position: 'relative',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
   reticleOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
   },
   reticleBox: {
-    width: 175,
-    height: 175,
+    width: 180,
+    height: 180,
     position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   corner: {
     position: 'absolute',
-    width: 22,
-    height: 22,
+    width: 26,
+    height: 26,
     borderColor: YELLOW,
   },
   cornerTL: {
     top: 0,
     left: 0,
-    borderTopWidth: 3,
-    borderLeftWidth: 3,
-    borderTopLeftRadius: 6,
+    borderTopWidth: 4,
+    borderLeftWidth: 4,
+    borderTopLeftRadius: 8,
   },
   cornerTR: {
     top: 0,
     right: 0,
-    borderTopWidth: 3,
-    borderRightWidth: 3,
-    borderTopRightRadius: 6,
+    borderTopWidth: 4,
+    borderRightWidth: 4,
+    borderTopRightRadius: 8,
   },
   cornerBL: {
     bottom: 0,
     left: 0,
-    borderBottomWidth: 3,
-    borderLeftWidth: 3,
-    borderBottomLeftRadius: 6,
+    borderBottomWidth: 4,
+    borderLeftWidth: 4,
+    borderBottomLeftRadius: 8,
   },
   cornerBR: {
     bottom: 0,
     right: 0,
-    borderBottomWidth: 3,
-    borderRightWidth: 3,
-    borderBottomRightRadius: 6,
+    borderBottomWidth: 4,
+    borderRightWidth: 4,
+    borderBottomRightRadius: 8,
   },
 });

@@ -39,7 +39,7 @@ const PASS_COLOR = '#22c55e';
 const FAIL_COLOR = '#ef4444';
 
 export default function HomePage() {
-  const { session, hasPermission } = useAuth();
+  const { session, hasPermission, isShiftExpired } = useAuth();
   const [checkoutVisible, setCheckoutVisible] = useState(false);
   const [stats, setStats] = useState<DailyScanStats>({
     total: 0,
@@ -51,7 +51,7 @@ export default function HomePage() {
   const [rulesCount, setRulesCount] = useState<number>(0);
   const [isLoadingStats, setIsLoadingStats] = useState<boolean>(true);
 
-  const canScan = hasPermission('scans.create');
+  const canScan = hasPermission('scans.create') && !isShiftExpired;
   const canViewHistory = hasPermission('scans.view');
 
   const refreshData = useCallback(async () => {
@@ -168,12 +168,20 @@ export default function HomePage() {
             </HStack>
           </Pressable>
         ) : (
-          <Box bg={PANEL} p="$4" borderRadius="$xl" borderWidth={1} borderColor="#ef4444">
-            <Text color="#ef4444" fontSize="$xs" fontWeight="800">
-              Camera Scanner Disabled
+          <Box
+            bg={PANEL}
+            p="$4"
+            borderRadius="$xl"
+            borderWidth={1}
+            borderColor={isShiftExpired ? YELLOW : '#ef4444'}
+          >
+            <Text color={isShiftExpired ? YELLOW : '#ef4444'} fontSize="$xs" fontWeight="800">
+              {isShiftExpired ? 'Shift Authorization Expired' : 'Camera Scanner Disabled'}
             </Text>
             <Text color={MUTED} fontSize="$2xs" mt="$1">
-              Your shift token lacks &quot;scans.create&quot; permission.
+              {isShiftExpired
+                ? 'Your shift token has expired. Scanning new items is forbidden. Please complete Checkout below.'
+                : 'Your shift token lacks "scans.create" permission.'}
             </Text>
           </Box>
         )}
@@ -182,14 +190,23 @@ export default function HomePage() {
         <Box bg={PANEL} borderWidth={1.5} borderColor="#1e293b" borderRadius="$xl" p="$4">
           <HStack justifyContent="space-between" alignItems="center" mb="$2">
             <HStack space="xs" alignItems="center">
-              <ShieldCheck size={18} color={PASS_COLOR} />
+              <ShieldCheck size={18} color={isShiftExpired ? FAIL_COLOR : PASS_COLOR} />
               <Text color="#f8fafc" fontSize="$xs" fontWeight="800">
-                ACTIVE OPERATOR SHIFT
+                {isShiftExpired ? 'EXPIRED OPERATOR SHIFT' : 'ACTIVE OPERATOR SHIFT'}
               </Text>
             </HStack>
-            <Box bg="rgba(250, 204, 21, 0.15)" px="$2" py="$0.5" borderRadius="$sm">
-              <Text color={YELLOW} fontSize="$2xs" fontWeight="900">
-                ROLE: {(session?.role || 'operator').toUpperCase()}
+            <Box
+              bg={isShiftExpired ? 'rgba(239, 68, 68, 0.15)' : 'rgba(250, 204, 21, 0.15)'}
+              px="$2"
+              py="$0.5"
+              borderRadius="$sm"
+            >
+              <Text
+                color={isShiftExpired ? FAIL_COLOR : YELLOW}
+                fontSize="$2xs"
+                fontWeight="900"
+              >
+                {isShiftExpired ? 'EXPIRED' : `ROLE: ${(session?.role || 'operator').toUpperCase()}`}
               </Text>
             </Box>
           </HStack>
@@ -205,10 +222,15 @@ export default function HomePage() {
             </VStack>
             <VStack alignItems="flex-end" space="2xs">
               <Text color={MUTED} fontSize="$2xs" fontWeight="700">
-                SHIFT EXPIRES
+                {isShiftExpired ? 'SHIFT STATUS' : 'SHIFT EXPIRES'}
               </Text>
-              <Text color={YELLOW} fontSize="$xs" fontWeight="900" fontFamily="monospace">
-                {expiresTime}
+              <Text
+                color={isShiftExpired ? FAIL_COLOR : YELLOW}
+                fontSize="$xs"
+                fontWeight="900"
+                fontFamily="monospace"
+              >
+                {isShiftExpired ? `EXPIRED (${expiresTime})` : expiresTime}
               </Text>
             </VStack>
           </HStack>

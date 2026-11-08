@@ -10,8 +10,9 @@ import {
   VStack,
 } from '@gluestack-ui/themed';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import {
+  AlertTriangle,
   CheckCircle2,
   ChevronDown,
   Copy,
@@ -19,6 +20,7 @@ import {
   Flashlight,
   FlashlightOff,
   Key,
+  LogOut,
   QrCode,
   ShieldAlert,
   ShieldCheck,
@@ -57,6 +59,7 @@ import { InventoryRecord, PublicKeyRecord, VerificationResult } from '../core/ty
 const BLACK = '#07111d';
 const PANEL = '#0f172a';
 const PANEL_ALT = '#111c2e';
+const BORDER = '#1e293b';
 const YELLOW = '#facc15';
 const MUTED = '#94a3b8';
 const PASS_COLOR = '#22c55e';
@@ -83,10 +86,10 @@ function translateErrorReason(result: VerificationResult): string {
 }
 
 export default function ScannerPage() {
-  const { session, hasPermission } = useAuth();
+  const { session, hasPermission, isShiftExpired } = useAuth();
   const [permission, requestPermission] = useCameraPermissions();
 
-  const canScan = hasPermission('scans.create');
+  const canScan = hasPermission('scans.create') && !isShiftExpired;
 
   // Keystore & Rules state
   const [publicKeys, setPublicKeys] = useState<PublicKeyRecord[]>([]);
@@ -110,26 +113,32 @@ export default function ScannerPage() {
   const [keyPickerVisible, setKeyPickerVisible] = useState<boolean>(false);
   const [rulePickerVisible, setRulePickerVisible] = useState<boolean>(false);
 
-  const selectedKey = publicKeys.find(k => k.id === selectedKeyId) || publicKeys[0] || null;
+  const selectedKey = publicKeys.find((k: PublicKeyRecord) => k.id === selectedKeyId) || publicKeys[0] || null;
   const selectedRule =
     typeof selectedRuleId === 'number'
-      ? inventoryRules.find(r => r.id === selectedRuleId) || null
+      ? inventoryRules.find((r: InventoryRecord) => r.id === selectedRuleId) || null
       : null;
 
   const loadDependencies = useCallback(async () => {
     try {
       const [keys, rules] = await Promise.all([getPublicKeys(), getInventoryItems()]);
       setPublicKeys(keys);
-      if (session?.publicKeyId && keys.some(k => k.id === session.publicKeyId)) {
-        setSelectedKeyId(session.publicKeyId);
-      } else if (keys.length > 0 && !selectedKeyId) {
-        setSelectedKeyId(keys[0].id);
-      }
+      setSelectedKeyId((current: number | null) => {
+        // Preserve user's manually chosen key if it exists in loaded keys
+        if (current !== null && keys.some((k: PublicKeyRecord) => k.id === current)) {
+          return current;
+        }
+        // Otherwise default to the session's login key if valid
+        if (session?.publicKeyId && keys.some((k: PublicKeyRecord) => k.id === session.publicKeyId)) {
+          return session.publicKeyId;
+        }
+        return keys.length > 0 ? keys[0].id : null;
+      });
       setInventoryRules(rules);
     } catch (e) {
       console.warn('Error loading scanner dependencies:', e);
     }
-  }, [session?.publicKeyId, selectedKeyId]);
+  }, [session?.publicKeyId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -143,7 +152,7 @@ export default function ScannerPage() {
   );
 
   const handleBarcodeScanned = async ({ data }: { data: string }) => {
-    if (scanLockRef.current || isVerifying || result) return;
+    if (scanLockRef.current || isVerifying || result || isShiftExpired) return;
     scanLockRef.current = true;
     setIsVerifying(true);
     setScannedJwtRaw(data.trim());
@@ -188,7 +197,7 @@ export default function ScannerPage() {
     try {
       let rulesToCheck: RuleCheck[] | undefined;
       if (selectedRuleId === 'ALL') {
-        rulesToCheck = inventoryRules.map(r => ({
+        rulesToCheck = inventoryRules.map((r: InventoryRecord) => ({
           ruleName: r.inventory_name,
           matchingClaimKey: r.matching_claim_key,
           expectedValue: r.expected_value,
@@ -276,6 +285,42 @@ export default function ScannerPage() {
     setTimeout(() => setCopiedToken(false), 2000);
   };
 
+  if (isShiftExpired) {
+    const expiredTimeStr = session?.exp
+      ? new Date(session.exp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : '';
+    return (
+      <Box flex={1} bg={BLACK} p="$6" alignItems="center" justifyContent="center">
+        <AlertTriangle size={64} color={YELLOW} />
+        <Heading color={YELLOW} size="xl" mt="$4" textAlign="center">
+          Shift Authorization Expired
+        </Heading>
+        <Text color={MUTED} textAlign="center" mt="$2" maxWidth={360}>
+          Your shift expired at{' '}
+          <Text color="#f8fafc" fontWeight="700">
+            {expiredTimeStr}
+          </Text>
+          . Scanning new items is forbidden. Please proceed to Checkout to sync your pending scans or complete offline checkout.
+        </Text>
+        <Button
+          size="lg"
+          bg={YELLOW}
+          borderRadius="$lg"
+          mt="$6"
+          minHeight={52}
+          onPress={() => router.replace('/')}
+        >
+          <HStack space="sm" alignItems="center">
+            <LogOut size={20} color={BLACK} />
+            <ButtonText color={BLACK} fontWeight="900">
+              GO TO CHECKOUT
+            </ButtonText>
+          </HStack>
+        </Button>
+      </Box>
+    );
+  }
+
   if (!canScan) {
     return (
       <Box flex={1} bg={BLACK} p="$6" alignItems="center" justifyContent="center">
@@ -339,8 +384,32 @@ export default function ScannerPage() {
         </View>
       )}
 
-      {/* 2. INDUSTRIAL RETICLE OVERLAY (Requirement 2 - Clearly Visible Frame) */}
-      <View style={styles.overlayContainer} pointerEvents="box-none">
+      {/* 2. INDUSTRIAL RETICLE OVERLAY (EXACT DEAD-CENTER OF SCREEN) */}
+      <View style={styles.reticleCenterLayer} pointerEvents="none">
+        <View style={styles.reticleBox}>
+          {/* Top guidance badge floating above frame without displacing the center */}
+          <View style={styles.guidanceBadge}>
+            <Text style={styles.viewfinderGuidance}>
+              {isVerifying ? 'VERIFYING RS256 SIGNATURE...' : 'ALIGN QR CODE INSIDE FRAME'}
+            </Text>
+          </View>
+
+          {/* 4 Corner Markers */}
+          <View style={[styles.cornerMarker, styles.cornerTL]} />
+          <View style={[styles.cornerMarker, styles.cornerTR]} />
+          <View style={[styles.cornerMarker, styles.cornerBL]} />
+          <View style={[styles.cornerMarker, styles.cornerBR]} />
+
+          {isVerifying ? (
+            <View style={styles.verifyingOverlay}>
+              <ActivityIndicator size="large" color={YELLOW} />
+            </View>
+          ) : null}
+        </View>
+      </View>
+
+      {/* 3. CONTROLS OVERLAY (TOP BAR & BOTTOM OPERATOR PILL) */}
+      <View style={styles.controlsOverlay} pointerEvents="box-none">
         {/* Top Control Header Bar */}
         <View style={styles.topBar}>
           <HStack space="xs" alignItems="center" flex={1}>
@@ -389,32 +458,11 @@ export default function ScannerPage() {
           {permission?.granted && (
             <Pressable
               style={[styles.torchBtn, isTorchOn && { backgroundColor: YELLOW, borderColor: YELLOW }]}
-              onPress={() => setIsTorchOn(prev => !prev)}
+              onPress={() => setIsTorchOn((prev: boolean) => !prev)}
             >
               {isTorchOn ? <Flashlight size={18} color={BLACK} /> : <FlashlightOff size={18} color="#f8fafc" />}
             </Pressable>
           )}
-        </View>
-
-        {/* Viewfinder Reticle */}
-        <View style={styles.viewfinderWrapper}>
-          <Text style={styles.viewfinderGuidance}>
-            {isVerifying ? 'VERIFYING RS256 SIGNATURE...' : 'ALIGN QR CODE INSIDE FRAME'}
-          </Text>
-
-          <View style={styles.reticleBox}>
-            {/* 4 Corner Markers */}
-            <View style={[styles.cornerMarker, styles.cornerTL]} />
-            <View style={[styles.cornerMarker, styles.cornerTR]} />
-            <View style={[styles.cornerMarker, styles.cornerBL]} />
-            <View style={[styles.cornerMarker, styles.cornerBR]} />
-
-            {isVerifying ? (
-              <View style={styles.verifyingOverlay}>
-                <ActivityIndicator size="large" color={YELLOW} />
-              </View>
-            ) : null}
-          </View>
         </View>
 
         {/* Bottom Operator Pill */}
@@ -513,7 +561,7 @@ export default function ScannerPage() {
               {result?.payload ? (
                 <Box mb="$3">
                   <Pressable
-                    onPress={() => setShowRawClaims(prev => !prev)}
+                    onPress={() => setShowRawClaims((prev: boolean) => !prev)}
                     style={styles.claimsToggleBtn}
                   >
                     <HStack justifyContent="space-between" alignItems="center">
@@ -576,35 +624,71 @@ export default function ScannerPage() {
         animationType="fade"
         onRequestClose={() => setKeyPickerVisible(false)}
       >
-        <Pressable style={styles.modalBackdrop} onPress={() => setKeyPickerVisible(false)}>
-          <Box bg={PANEL} borderWidth={2} borderColor={YELLOW} borderRadius="$xl" p="$4" width="90%" maxWidth={400}>
-            <Text color={YELLOW} fontSize="$md" fontWeight="900" mb="$2">
-              Select Verification Public Key
-            </Text>
-            <ScrollView style={{ maxHeight: 280 }}>
-              {publicKeys.map(k => (
-                <Pressable
-                  key={k.id}
-                  style={[
-                    styles.pickerItem,
-                    selectedKeyId === k.id && { backgroundColor: 'rgba(250, 204, 21, 0.15)', borderColor: YELLOW },
-                  ]}
-                  onPress={() => {
-                    setSelectedKeyId(k.id);
-                    setKeyPickerVisible(false);
-                  }}
-                >
-                  <Text color="#f8fafc" fontSize="$xs" fontWeight="800">
-                    {k.name}
-                  </Text>
-                  <Text color={MUTED} fontSize="$2xs" mt="$0.5">
-                    Created: {new Date(k.created_at).toLocaleDateString()}
-                  </Text>
-                </Pressable>
-              ))}
+        <View style={styles.modalBackdrop}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setKeyPickerVisible(false)}
+          />
+          <Box
+            bg={PANEL}
+            borderWidth={1}
+            borderColor={BORDER}
+            borderRadius="$xl"
+            p="$4"
+            width="90%"
+            maxWidth={400}
+            zIndex={10}
+          >
+            <HStack justifyContent="space-between" alignItems="center" mb="$3">
+              <Text color={YELLOW} fontSize="$md" fontWeight="900">
+                Select Verification Key
+              </Text>
+              <Pressable
+                onPress={() => setKeyPickerVisible(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <X size={18} color={MUTED} />
+              </Pressable>
+            </HStack>
+
+            <ScrollView style={{ maxHeight: 300 }} keyboardShouldPersistTaps="handled">
+              {publicKeys.map((k: PublicKeyRecord) => {
+                const isSelected = selectedKeyId === k.id;
+                return (
+                  <Pressable
+                    key={k.id}
+                    style={[
+                      styles.pickerItem,
+                      isSelected && styles.pickerItemActive,
+                    ]}
+                    onPress={() => {
+                      setSelectedKeyId(k.id);
+                      setKeyPickerVisible(false);
+                    }}
+                  >
+                    <HStack justifyContent="space-between" alignItems="center">
+                      <VStack flex={1} mr="$2">
+                        <Text
+                          color={isSelected ? YELLOW : '#f8fafc'}
+                          fontSize="$xs"
+                          fontWeight="800"
+                        >
+                          {k.name}
+                        </Text>
+                        <Text color={MUTED} fontSize="$2xs" mt="$0.5">
+                          ID: #{k.id} · {k.created_at ? new Date(k.created_at).toLocaleDateString() : 'Active'}
+                        </Text>
+                      </VStack>
+                      {isSelected && (
+                        <CheckCircle2 size={16} color={YELLOW} />
+                      )}
+                    </HStack>
+                  </Pressable>
+                );
+              })}
             </ScrollView>
           </Box>
-        </Pressable>
+        </View>
       </Modal>
 
       {/* Rule Selection Modal */}
@@ -614,12 +698,34 @@ export default function ScannerPage() {
         animationType="fade"
         onRequestClose={() => setRulePickerVisible(false)}
       >
-        <Pressable style={styles.modalBackdrop} onPress={() => setRulePickerVisible(false)}>
-          <Box bg={PANEL} borderWidth={2} borderColor={YELLOW} borderRadius="$xl" p="$4" width="90%" maxWidth={400}>
-            <Text color={YELLOW} fontSize="$md" fontWeight="900" mb="$2">
-              Select Inventory Rule
-            </Text>
-            <ScrollView style={{ maxHeight: 300 }}>
+        <View style={styles.modalBackdrop}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setRulePickerVisible(false)}
+          />
+          <Box
+            bg={PANEL}
+            borderWidth={1}
+            borderColor={BORDER}
+            borderRadius="$xl"
+            p="$4"
+            width="90%"
+            maxWidth={400}
+            zIndex={10}
+          >
+            <HStack justifyContent="space-between" alignItems="center" mb="$3">
+              <Text color={YELLOW} fontSize="$md" fontWeight="900">
+                Select Inventory Rule
+              </Text>
+              <Pressable
+                onPress={() => setRulePickerVisible(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <X size={18} color={MUTED} />
+              </Pressable>
+            </HStack>
+
+            <ScrollView style={{ maxHeight: 300 }} keyboardShouldPersistTaps="handled">
               <Pressable
                 style={[styles.pickerItem, selectedRuleId === null && styles.pickerItemActive]}
                 onPress={() => {
@@ -627,9 +733,12 @@ export default function ScannerPage() {
                   setRulePickerVisible(false);
                 }}
               >
-                <Text color="#f8fafc" fontSize="$xs" fontWeight="800">
-                  None (Signature Check Only)
-                </Text>
+                <HStack justifyContent="space-between" alignItems="center">
+                  <Text color="#f8fafc" fontSize="$xs" fontWeight="800">
+                    None (Signature Check Only)
+                  </Text>
+                  {selectedRuleId === null && <CheckCircle2 size={16} color={YELLOW} />}
+                </HStack>
               </Pressable>
 
               {inventoryRules.length > 0 && (
@@ -640,32 +749,43 @@ export default function ScannerPage() {
                     setRulePickerVisible(false);
                   }}
                 >
-                  <Text color={YELLOW} fontSize="$xs" fontWeight="900">
-                    [ALL] Enforce All {inventoryRules.length} Rules
-                  </Text>
+                  <HStack justifyContent="space-between" alignItems="center">
+                    <Text color={YELLOW} fontSize="$xs" fontWeight="900">
+                      [ALL] Enforce All {inventoryRules.length} Rules
+                    </Text>
+                    {selectedRuleId === 'ALL' && <CheckCircle2 size={16} color={YELLOW} />}
+                  </HStack>
                 </Pressable>
               )}
 
-              {inventoryRules.map(r => (
-                <Pressable
-                  key={r.id}
-                  style={[styles.pickerItem, selectedRuleId === r.id && styles.pickerItemActive]}
-                  onPress={() => {
-                    setSelectedRuleId(r.id);
-                    setRulePickerVisible(false);
-                  }}
-                >
-                  <Text color="#f8fafc" fontSize="$xs" fontWeight="800">
-                    {r.inventory_name}
-                  </Text>
-                  <Text color={YELLOW} fontSize="$2xs">
-                    {r.matching_claim_key} == {r.expected_value}
-                  </Text>
-                </Pressable>
-              ))}
+              {inventoryRules.map((r: InventoryRecord) => {
+                const isSelected = selectedRuleId === r.id;
+                return (
+                  <Pressable
+                    key={r.id}
+                    style={[styles.pickerItem, isSelected && styles.pickerItemActive]}
+                    onPress={() => {
+                      setSelectedRuleId(r.id);
+                      setRulePickerVisible(false);
+                    }}
+                  >
+                    <HStack justifyContent="space-between" alignItems="center">
+                      <VStack flex={1} mr="$2">
+                        <Text color={isSelected ? YELLOW : '#f8fafc'} fontSize="$xs" fontWeight="800">
+                          {r.inventory_name}
+                        </Text>
+                        <Text color={YELLOW} fontSize="$2xs">
+                          {r.matching_claim_key} == {r.expected_value}
+                        </Text>
+                      </VStack>
+                      {isSelected && <CheckCircle2 size={16} color={YELLOW} />}
+                    </HStack>
+                  </Pressable>
+                );
+              })}
             </ScrollView>
           </Box>
-        </Pressable>
+        </View>
       </Modal>
     </View>
   );
@@ -685,12 +805,31 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 24,
   },
-  overlayContainer: {
+  reticleCenterLayer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    transform: [{ translateY: -28 }],
+  },
+  guidanceBadge: {
+    position: 'absolute',
+    top: -38,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+  },
+  controlsOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 24,
+    paddingTop: Platform.OS === 'android' ? 20 : 16,
+    paddingBottom: Platform.OS === 'android' ? 24 : 20,
   },
   topBar: {
     flexDirection: 'row',
@@ -716,19 +855,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  viewfinderWrapper: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   viewfinderGuidance: {
     color: '#f8fafc',
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 1,
-    marginBottom: 16,
-    backgroundColor: 'rgba(15, 23, 42, 0.8)',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    paddingHorizontal: 14,
+    paddingVertical: 5,
     borderRadius: 12,
     overflow: 'hidden',
   },

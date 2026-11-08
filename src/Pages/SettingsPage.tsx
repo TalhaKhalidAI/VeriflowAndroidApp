@@ -806,12 +806,11 @@ export default function SettingsPage() {
                           Scan Public Key QR (<Text color={YELLOW}>Clean Base64</Text>, <Text color={YELLOW}>JSON</Text>, or <Text color={YELLOW}>PEM</Text>)
                         </Text>
 
-                        <Box
-                          h={230}
-                          borderRadius="$md"
-                          overflow="hidden"
-                          bg="#050914"
-                          position="relative"
+                        <View
+                          style={[
+                            styles.cameraContainer,
+                            { height: 230 }
+                          ]}
                         >
                           {permission?.granted ? (
                             <CameraView
@@ -854,9 +853,14 @@ export default function SettingsPage() {
                           )}
 
                           <View style={styles.reticleOverlay} pointerEvents="none">
-                            <View style={styles.reticleBox} />
+                            <View style={styles.reticleBox}>
+                              <View style={[styles.corner, styles.cornerTL]} />
+                              <View style={[styles.corner, styles.cornerTR]} />
+                              <View style={[styles.corner, styles.cornerBL]} />
+                              <View style={[styles.corner, styles.cornerBR]} />
+                            </View>
                           </View>
-                        </Box>
+                        </View>
                       </Box>
                     )}
 
@@ -1213,15 +1217,11 @@ export default function SettingsPage() {
 
                 {/* Inline Root CA Camera Viewport */}
                 {caQrScannerVisible && (
-                  <Box
-                    h={220}
-                    borderRadius="$md"
-                    overflow="hidden"
-                    bg="#050914"
-                    position="relative"
-                    borderWidth={1}
-                    borderColor={YELLOW}
-                    mt="$3"
+                  <View
+                    style={[
+                      styles.cameraContainer,
+                      { height: 220, borderWidth: 1, borderColor: YELLOW, marginTop: 12 }
+                    ]}
                   >
                     {permission?.granted ? (
                       <CameraView
@@ -1264,9 +1264,14 @@ export default function SettingsPage() {
                     )}
 
                     <View style={styles.reticleOverlay} pointerEvents="none">
-                      <View style={styles.reticleBox} />
+                      <View style={styles.reticleBox}>
+                        <View style={[styles.corner, styles.cornerTL]} />
+                        <View style={[styles.corner, styles.cornerTR]} />
+                        <View style={[styles.corner, styles.cornerBL]} />
+                        <View style={[styles.corner, styles.cornerBR]} />
+                      </View>
                     </View>
-                  </Box>
+                  </View>
                 )}
               </Box>
 
@@ -1587,17 +1592,65 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 20,
   },
+  cameraContainer: {
+    width: '100%',
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: '#050914',
+    position: 'relative',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
   reticleOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
   },
   reticleBox: {
     width: 160,
     height: 160,
-    borderWidth: 2,
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  corner: {
+    position: 'absolute',
+    width: 24,
+    height: 24,
     borderColor: YELLOW,
-    borderRadius: 14,
-    borderStyle: 'dashed',
+  },
+  cornerTL: {
+    top: 0,
+    left: 0,
+    borderTopWidth: 3.5,
+    borderLeftWidth: 3.5,
+    borderTopLeftRadius: 6,
+  },
+  cornerTR: {
+    top: 0,
+    right: 0,
+    borderTopWidth: 3.5,
+    borderRightWidth: 3.5,
+    borderTopRightRadius: 6,
+  },
+  cornerBL: {
+    bottom: 0,
+    left: 0,
+    borderBottomWidth: 3.5,
+    borderLeftWidth: 3.5,
+    borderBottomLeftRadius: 6,
+  },
+  cornerBR: {
+    bottom: 0,
+    right: 0,
+    borderBottomWidth: 3.5,
+    borderRightWidth: 3.5,
+    borderBottomRightRadius: 6,
   },
 });
