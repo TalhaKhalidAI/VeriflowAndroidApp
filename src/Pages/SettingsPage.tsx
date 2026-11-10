@@ -30,7 +30,7 @@ import {
   Sliders,
   Trash2,
 } from 'lucide-react-native';
-import React, { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -83,6 +83,11 @@ export default function SettingsPage() {
     setApiBaseUrl,
     rootCaCert,
     setRootCaCert,
+    isStrictRules,
+    isStrictKey,
+    strictKeyId,
+    canOverrideRules,
+    canOverrideKey,
   } = useAuth();
 
   // Active Tab
@@ -274,6 +279,10 @@ export default function SettingsPage() {
   };
 
   const confirmDeleteKey = (item: PublicKeyRecord) => {
+    if (isStrictKey && (String(item.id) === String(strictKeyId) || item.name.includes(String(strictKeyId)))) {
+      Alert.alert('Policy Enforced', 'Cannot delete the cryptographic verification key assigned to your active shift.');
+      return;
+    }
     if (!canDeleteKeys) {
       Alert.alert('Permission Denied', 'Your token lacks "keys.delete" permission.');
       return;
@@ -339,6 +348,13 @@ export default function SettingsPage() {
 
   // ---------------- INVENTORY RULE ACTIONS ----------------
   const saveRule = async () => {
+    if (isStrictRules) {
+      Alert.alert(
+        'Policy Enforced',
+        'Inventory verification rules are strictly managed by shift policy. Manual rule creation is disabled on this device.',
+      );
+      return;
+    }
     if (!canCreateRules) {
       Alert.alert('Permission Denied', 'Your token lacks "inventory_rules.create" permission.');
       return;
@@ -356,6 +372,13 @@ export default function SettingsPage() {
   };
 
   const saveEditRule = async () => {
+    if (isStrictRules) {
+      Alert.alert(
+        'Policy Enforced',
+        'Inventory verification rules are strictly managed by shift policy. Editing rules is disabled on this device.',
+      );
+      return;
+    }
     if (!canUpdateRules) {
       Alert.alert('Permission Denied', 'Your token lacks "inventory_rules.update" permission.');
       return;
@@ -372,6 +395,13 @@ export default function SettingsPage() {
   };
 
   const confirmDeleteRule = (item: InventoryRecord) => {
+    if (isStrictRules) {
+      Alert.alert(
+        'Policy Enforced',
+        'Inventory verification rules are strictly managed by shift policy. Deleting rules is disabled on this device.',
+      );
+      return;
+    }
     if (!canDeleteRules) {
       Alert.alert('Permission Denied', 'Your token lacks "inventory_rules.delete" permission.');
       return;
@@ -551,17 +581,41 @@ export default function SettingsPage() {
                       fontSize="$2xs"
                       fontWeight="900"
                     >
-                      {canCreateRules && canUpdateRules && canDeleteRules
-                        ? 'FULL CRUD'
-                        : canCreateRules
-                        ? 'CREATE'
-                        : 'READ ONLY'}
+                      {isStrictRules
+                        ? 'POLICY ENFORCED'
+                        : canCreateRules && canUpdateRules && canDeleteRules
+                          ? 'FULL CRUD'
+                          : canCreateRules
+                            ? 'CREATE'
+                            : 'READ ONLY'}
                     </Text>
                   </Box>
                 </HStack>
 
+                {/* Strict Rules Policy Banner */}
+                {isStrictRules && (
+                  <Box
+                    bg="rgba(250, 204, 21, 0.12)"
+                    borderColor={YELLOW}
+                    borderWidth={1}
+                    borderRadius="$lg"
+                    p="$3"
+                    my="$2"
+                  >
+                    <HStack space="xs" alignItems="center">
+                      <Lock size={15} color={YELLOW} />
+                      <Text color={YELLOW} fontSize="$xs" fontWeight="900">
+                        Shift Inventory Policy Enforced
+                      </Text>
+                    </HStack>
+                    <Text color="#cbd5e1" fontSize="$2xs" mt="$1">
+                      Rules are centrally dictated by your administrator and synchronized in real-time. Manual editing on this device is restricted.
+                    </Text>
+                  </Box>
+                )}
+
                 {/* Add Rule Toggle / Form */}
-                {canCreateRules ? (
+                {!isStrictRules && canCreateRules ? (
                   <VStack space="xs" mt="$3" mb="$2">
                     <Button
                       size="xs"
@@ -643,26 +697,34 @@ export default function SettingsPage() {
                           </Text>
                         </VStack>
 
-                        <HStack space="xs">
-                          {canUpdateRules ? (
-                            <Pressable
-                              onPress={() => {
-                                setEditingRule(r);
-                                setEditRuleName(r.inventory_name);
-                                setEditRuleKey(r.matching_claim_key);
-                                setEditRuleValue(r.expected_value);
-                              }}
-                              style={styles.actionBtn}
-                            >
-                              <Pencil size={15} color={YELLOW} />
-                            </Pressable>
-                          ) : null}
+                        <HStack space="xs" alignItems="center">
+                          {isStrictRules ? (
+                            <Box px="$2" py="$0.5" borderRadius="$full" bg="rgba(250, 204, 21, 0.1)">
+                              <Text color={YELLOW} fontSize="$2xs" fontWeight="700">ENFORCED</Text>
+                            </Box>
+                          ) : (
+                            <>
+                              {canUpdateRules ? (
+                                <Pressable
+                                  onPress={() => {
+                                    setEditingRule(r);
+                                    setEditRuleName(r.inventory_name);
+                                    setEditRuleKey(r.matching_claim_key);
+                                    setEditRuleValue(r.expected_value);
+                                  }}
+                                  style={styles.actionBtn}
+                                >
+                                  <Pencil size={15} color={YELLOW} />
+                                </Pressable>
+                              ) : null}
 
-                          {canDeleteRules ? (
-                            <Pressable onPress={() => confirmDeleteRule(r)} style={styles.actionBtn}>
-                              <Trash2 size={15} color={FAIL_COLOR} />
-                            </Pressable>
-                          ) : null}
+                              {canDeleteRules ? (
+                                <Pressable onPress={() => confirmDeleteRule(r)} style={styles.actionBtn}>
+                                  <Trash2 size={15} color={FAIL_COLOR} />
+                                </Pressable>
+                              ) : null}
+                            </>
+                          )}
                         </HStack>
                       </HStack>
                     ))
@@ -716,14 +778,38 @@ export default function SettingsPage() {
                       fontSize="$2xs"
                       fontWeight="900"
                     >
-                      {canCreateKeys && canUpdateKeys && canDeleteKeys
-                        ? 'FULL ACCESS'
-                        : canCreateKeys
-                        ? 'CREATE ONLY'
-                        : 'READ ONLY'}
+                      {isStrictKey
+                        ? 'KEY LOCKED'
+                        : canCreateKeys && canUpdateKeys && canDeleteKeys
+                          ? 'FULL ACCESS'
+                          : canCreateKeys
+                            ? 'CREATE ONLY'
+                            : 'READ ONLY'}
                     </Text>
                   </Box>
                 </HStack>
+
+                {/* Strict Key Policy Banner */}
+                {isStrictKey && (
+                  <Box
+                    bg="rgba(56, 189, 248, 0.12)"
+                    borderColor="#38bdf8"
+                    borderWidth={1}
+                    borderRadius="$lg"
+                    p="$3"
+                    mb="$3"
+                  >
+                    <HStack space="xs" alignItems="center">
+                      <Lock size={15} color="#38bdf8" />
+                      <Text color="#38bdf8" fontSize="$xs" fontWeight="900">
+                        Shift Signing Key Enforced
+                      </Text>
+                    </HStack>
+                    <Text color="#cbd5e1" fontSize="$2xs" mt="$1">
+                      Verification key is locked to Shift Key ({strictKeyId?.slice(0, 8)}...). Only administrators with &apos;keys.override&apos; permission can modify active verification keys.
+                    </Text>
+                  </Box>
+                )}
 
                 {/* Key Management Actions */}
                 {canCreateKeys ? (
@@ -1169,8 +1255,8 @@ export default function SettingsPage() {
                       {rootCaCert
                         ? 'Custom CA Active'
                         : rootCaInput.trim()
-                        ? 'Draft Pending'
-                        : 'System Only'}
+                          ? 'Draft Pending'
+                          : 'System Only'}
                     </Text>
                   </Box>
                 </HStack>
@@ -1387,8 +1473,8 @@ export default function SettingsPage() {
                       result.ok
                         ? 'Permissions Synced'
                         : result.status === 401
-                        ? 'Shift Token Rejected'
-                        : 'Sync Unavailable',
+                          ? 'Shift Token Rejected'
+                          : 'Sync Unavailable',
                       result.ok
                         ? 'Updated user permissions from server.'
                         : result.error || 'Could not reach server. Using current token permissions.',
@@ -1607,17 +1693,15 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    width: '100%',
-    height: '100%',
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   reticleBox: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
     width: 160,
     height: 160,
-    position: 'relative',
-    alignItems: 'center',
-    justifyContent: 'center',
+    marginTop: -80,
+    marginLeft: -80,
   },
   corner: {
     position: 'absolute',

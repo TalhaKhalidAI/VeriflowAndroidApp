@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { Alert, NativeModules, Platform } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
-import { getAppSetting, initDatabase, setAppSetting, syncRulesFromPayload } from './db';
+import { getAppSetting, initDatabase, replaceInventoryRules, setAppSetting, syncRulesFromPayload } from './db';
 import { buildApiUrl, normalizeApiBaseUrl, parseRootCaPayload } from './jwt';
 import { ShiftSession } from './types';
 
@@ -28,6 +28,15 @@ interface AuthContextType {
   clearOfflineCheckout: () => Promise<void>;
   login: (token: string, payload: any, publicKeyId?: number) => Promise<void>;
   logout: () => Promise<void>;
+  // Strict Shift Policy flags & methods
+  isStrictRules: boolean;
+  isStrictKey: boolean;
+  strictKeyId?: string;
+  strictKeyKid?: string;
+  canOverrideRules: boolean;
+  canOverrideKey: boolean;
+  ruleMatchMode: 'all' | 'any';
+  refreshActiveRules: () => Promise<void>;
 }
 
 const DEFAULT_API_URL =
@@ -219,10 +228,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (perms['scans.create'] === undefined) perms['scans.create'] = true;
     if (perms['inventory_rules.view'] === undefined) perms['inventory_rules.view'] = true;
 
+    const canOverrideRules = Boolean(
+      perms['rules.override'] ||
+      payload.role === 'admin' ||
+      payload.allow_rule_override === true
+    );
+
     // Store embedded inventory rules (supports dict or array) to local SQLite DB
     if (payload.rules) {
       try {
-        await syncRulesFromPayload(payload.rules);
+        if (!canOverrideRules && Array.isArray(payload.rules)) {
+          await replaceInventoryRules(
+            payload.rules.map((r: any) => ({
+              rule_name: r.rule_name || `Rule_${r.matching_claim_key}`,
+              matching_claim_key: String(r.matching_claim_key),
+              expected_value: String(r.expected_value ?? ''),
+            }))
+          );
+        } else {
+          await syncRulesFromPayload(payload.rules);
+        }
       } catch (err) {
         console.warn('Could not auto-sync rules from token:', err);
       }
@@ -247,18 +272,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Offline fallback: keep token permissions
     }
 
-    const newSession: ShiftSession = {
+    const newSession: ShiftSession & Record<string, any> = {
       token: token.trim(),
       sub: String(payload.sub || payload.email || 'operator'),
       userId: Number(payload.user_id || 0),
       shiftId: String(payload.shift_id || ''),
-      keyId: payload.key_id ? String(payload.key_id) : undefined,
+      keyId: payload.strict_key_id ? String(payload.strict_key_id) : (payload.key_id ? String(payload.key_id) : undefined),
       role: payload.role ? String(payload.role) : 'user',
       permissions: perms,
       rules: payload.rules || [],
       exp: Number(payload.exp || 0),
       iat: Number(payload.iat || 0),
       publicKeyId,
+      strict_rules: payload.strict_rules,
+      strict_key: payload.strict_key,
+      strict_key_id: payload.strict_key_id,
+      strict_key_kid: payload.strict_key_kid,
+      allow_rule_override: payload.allow_rule_override,
+      allow_key_override: payload.allow_key_override,
+      rule_match_mode: payload.rule_match_mode === 'any' ? 'any' : 'all',
     };
 
     setSession(newSession);
@@ -468,6 +500,98 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     session?.exp && Math.floor(Date.now() / 1000) >= session.exp
   );
 
+  // Strict Policy enforcements directly driven by Shift modal checkboxes:
+  // If strict_rules was checked on shift -> rules are strictly locked on the phone.
+  // If strict_rules was unchecked -> operator can freely select / toggle rules on the phone.
+  const isStrictRules = Boolean(
+    session &&
+    ((session as any).strict_rules !== undefined
+      ? Boolean((session as any).strict_rules)
+      : (session as any).allow_rule_override !== undefined
+      ? !(session as any).allow_rule_override
+      : !session.permissions?.['rules.override'] && session.role !== 'admin')
+  );
+  const canOverrideRules = !isStrictRules;
+
+  // If strict_key was checked on shift -> verification key is strictly locked to strictKeyId.
+  // If strict_key was unchecked -> operator can freely select other keys on the phone.
+  const isStrictKey = Boolean(
+    session &&
+    ((session as any).strict_key !== undefined
+      ? Boolean((session as any).strict_key)
+      : (session as any).allow_key_override !== undefined
+      ? !(session as any).allow_key_override
+      : !session.permissions?.['keys.override'] && session.role !== 'admin')
+  );
+  const strictKeyId = isStrictKey
+    ? ((session as any)?.strict_key_id || session?.keyId)
+    : undefined;
+  const strictKeyKid = isStrictKey
+    ? (session as any)?.strict_key_kid
+    : undefined;
+  const canOverrideKey = !isStrictKey;
+  const ruleMatchMode: 'all' | 'any' = (session as any)?.rule_match_mode === 'any' ? 'any' : 'all';
+
+  // TanStack Query: Live background rule polling (every 15s)
+  const { data: remoteRules, refetch: refetchRemoteRules } = useQuery({
+    queryKey: ['shift_active_rules_sync', session?.shiftId, session?.token, apiBaseUrl],
+    queryFn: async () => {
+      if (!session?.token) return null;
+      try {
+        const url = buildApiUrl(apiBaseUrl, '/shifts/active/rules');
+        const res = await fetch(url, {
+          headers: {
+            Authorization: `Bearer ${session.token}`,
+            Accept: 'application/json',
+          },
+        });
+        if (!res.ok) return null;
+        return (await res.json()) as Array<{
+          id: string | number;
+          rule_name: string;
+          matching_claim_key: string;
+          expected_value: string;
+          is_active: boolean;
+        }>;
+      } catch {
+        return null;
+      }
+    },
+    enabled: Boolean(session?.token && session?.shiftId),
+    refetchInterval: 15000,
+    refetchIntervalInBackground: true,
+  });
+
+  const prevRulesHashRef = useRef<string>('');
+
+  useEffect(() => {
+    if (!remoteRules || !session || !isStrictRules) return;
+    const rulesHash = JSON.stringify(remoteRules);
+    if (rulesHash === prevRulesHashRef.current) return;
+    prevRulesHashRef.current = rulesHash;
+
+    void replaceInventoryRules(
+      remoteRules.map((r: any) => ({
+        rule_name: r.rule_name,
+        matching_claim_key: r.matching_claim_key,
+        expected_value: r.expected_value,
+      }))
+    );
+  }, [remoteRules, session?.shiftId, isStrictRules]);
+
+  const refreshActiveRules = useCallback(async () => {
+    const res = await refetchRemoteRules();
+    if (res.data && isStrictRules) {
+      await replaceInventoryRules(
+        res.data.map((r: any) => ({
+          rule_name: r.rule_name,
+          matching_claim_key: r.matching_claim_key,
+          expected_value: r.expected_value,
+        }))
+      );
+    }
+  }, [refetchRemoteRules, isStrictRules]);
+
   return (
     <AuthContext.Provider
       value={{
@@ -487,6 +611,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         clearOfflineCheckout,
         login,
         logout,
+        isStrictRules,
+        isStrictKey,
+        strictKeyId,
+        strictKeyKid,
+        canOverrideRules,
+        canOverrideKey,
+        ruleMatchMode,
+        refreshActiveRules,
       }}
     >
       {children}

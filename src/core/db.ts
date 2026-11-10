@@ -215,6 +215,32 @@ export function deleteInventoryItem(id: number): Promise<void> {
   return Promise.resolve();
 }
 
+export function replaceInventoryRules(
+  rules: Array<{ rule_name?: string; matching_claim_key: string; expected_value: string }>,
+): Promise<void> {
+  if (!db) {
+    memoryStore.inventory = rules.map((r, idx) => ({
+      id: idx + 1,
+      inventory_name: r.rule_name || `Rule_${r.matching_claim_key}`,
+      matching_claim_key: r.matching_claim_key,
+      expected_value: String(r.expected_value ?? ''),
+    }));
+    return Promise.resolve();
+  }
+  try {
+    db.runSync('DELETE FROM inventory_ids');
+    for (const r of rules) {
+      db.runSync(
+        'INSERT INTO inventory_ids (inventory_name, matching_claim_key, expected_value) VALUES (?, ?, ?)',
+        [r.rule_name || `Rule_${r.matching_claim_key}`, r.matching_claim_key, String(r.expected_value ?? '')],
+      );
+    }
+  } catch (e) {
+    console.warn('replaceInventoryRules error:', e);
+  }
+  return Promise.resolve();
+}
+
 export async function syncRulesFromPayload(
   rules?: any,
 ): Promise<number> {

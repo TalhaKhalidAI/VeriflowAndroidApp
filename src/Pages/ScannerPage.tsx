@@ -20,15 +20,15 @@ import {
   Flashlight,
   FlashlightOff,
   Key,
+  Lock,
   LogOut,
   QrCode,
   ShieldAlert,
-  ShieldCheck,
   SlidersHorizontal,
   X,
-  XCircle,
+  XCircle
 } from 'lucide-react-native';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -42,6 +42,7 @@ import {
 import { useAuth } from '../core/authContext';
 import {
   addPublicKey,
+  upsertPublicKey,
   addScanToQueue,
   getInventoryItems,
   getPublicKeys,
@@ -49,6 +50,7 @@ import {
 } from '../core/db';
 import {
   RuleCheck,
+  buildApiUrl,
   extractJwtPayload,
   isLikelyPublicKeyPayload,
   parsePublicKeyPayload,
@@ -86,7 +88,7 @@ function translateErrorReason(result: VerificationResult): string {
 }
 
 export default function ScannerPage() {
-  const { session, hasPermission, isShiftExpired } = useAuth();
+  const { session, hasPermission, isShiftExpired, isStrictRules, isStrictKey, strictKeyId, strictKeyKid, ruleMatchMode, apiBaseUrl } = useAuth();
   const [permission, requestPermission] = useCameraPermissions();
 
   const canScan = hasPermission('scans.create') && !isShiftExpired;
@@ -95,7 +97,7 @@ export default function ScannerPage() {
   const [publicKeys, setPublicKeys] = useState<PublicKeyRecord[]>([]);
   const [selectedKeyId, setSelectedKeyId] = useState<number | null>(null);
   const [inventoryRules, setInventoryRules] = useState<InventoryRecord[]>([]);
-  const [selectedRuleId, setSelectedRuleId] = useState<number | 'ALL' | null>(null);
+  const [selectedRuleId, setSelectedRuleId] = useState<number | 'ALL' | 'ANY' | null>(null);
 
   // Camera state
   const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
@@ -121,9 +123,64 @@ export default function ScannerPage() {
 
   const loadDependencies = useCallback(async () => {
     try {
-      const [keys, rules] = await Promise.all([getPublicKeys(), getInventoryItems()]);
+      let [keys, rules] = await Promise.all([getPublicKeys(), getInventoryItems()]);
+
+      const targetId = strictKeyId ? String(strictKeyId).toLowerCase().trim() : '';
+      const targetKid = strictKeyKid ? String(strictKeyKid).toLowerCase().trim() : '';
+
+      const findMatch = (list: PublicKeyRecord[]) => {
+        if (!isStrictKey || (!targetId && !targetKid)) return null;
+        return (
+          list.find((k: PublicKeyRecord) => {
+            const nameLower = k.name.toLowerCase();
+            return (
+              (targetId && String(k.id) === targetId) ||
+              (targetId && nameLower.includes(targetId)) ||
+              (targetKid && nameLower.includes(targetKid))
+            );
+          }) || null
+        );
+      };
+
+      let matchedStrict = findMatch(keys);
+
+      // If strict key is enforced but not found in local SQLite, auto-sync latest JWKS from server API
+      if (isStrictKey && !matchedStrict && apiBaseUrl) {
+        try {
+          const targetJwksUrl = buildApiUrl(apiBaseUrl, '/keys/jwks');
+          const res = await fetch(targetJwksUrl, { headers: { Accept: 'application/json' } }).catch(() => null);
+          if (res && res.ok) {
+            const jwks = await res.json();
+            const serverKeys = jwks.keys || [];
+            for (const k of serverKeys) {
+              const pem =
+                k.public_key ||
+                (k.x5c && k.x5c[0]
+                  ? `-----BEGIN PUBLIC KEY-----\n${k.x5c[0]}\n-----END PUBLIC KEY-----`
+                  : null);
+              if (pem) {
+                const keyAlias = `${k.name || 'Server Key'} (kid: ${k.kid || ''}) [id: ${k.id || ''}]`;
+                await upsertPublicKey(keyAlias, pem);
+              }
+            }
+            keys = await getPublicKeys();
+            matchedStrict = findMatch(keys);
+          }
+        } catch (fetchErr) {
+          console.warn('Auto-sync JWKS for strict key in scanner failed:', fetchErr);
+        }
+      }
+
       setPublicKeys(keys);
+
       setSelectedKeyId((current: number | null) => {
+        // If strict key policy is active, strictly bind to the matched strict key
+        if (matchedStrict) {
+          return matchedStrict.id;
+        }
+        if (isStrictKey && keys.length > 0) {
+          return keys[0].id;
+        }
         // Preserve user's manually chosen key if it exists in loaded keys
         if (current !== null && keys.some((k: PublicKeyRecord) => k.id === current)) {
           return current;
@@ -134,11 +191,24 @@ export default function ScannerPage() {
         }
         return keys.length > 0 ? keys[0].id : null;
       });
+
       setInventoryRules(rules);
+      setSelectedRuleId((prev) => {
+        if (isStrictRules && rules.length > 0) {
+          return ruleMatchMode === 'any' ? 'ANY' : 'ALL';
+        }
+        if (prev !== null && prev !== 'ALL' && prev !== 'ANY' && rules.some((r: InventoryRecord) => r.id === prev)) {
+          return prev;
+        }
+        if (prev === null) {
+          return null;
+        }
+        return rules.length > 0 ? (ruleMatchMode === 'any' ? 'ANY' : 'ALL') : null;
+      });
     } catch (e) {
       console.warn('Error loading scanner dependencies:', e);
     }
-  }, [session?.publicKeyId]);
+  }, [session?.publicKeyId, isStrictKey, strictKeyId, strictKeyKid, isStrictRules, ruleMatchMode, apiBaseUrl]);
 
   useFocusEffect(
     useCallback(() => {
@@ -196,12 +266,29 @@ export default function ScannerPage() {
 
     try {
       let rulesToCheck: RuleCheck[] | undefined;
-      if (selectedRuleId === 'ALL') {
+      let effectiveMatchMode: 'all' | 'any' = ruleMatchMode;
+
+      if (isStrictRules && inventoryRules.length > 0) {
         rulesToCheck = inventoryRules.map((r: InventoryRecord) => ({
           ruleName: r.inventory_name,
           matchingClaimKey: r.matching_claim_key,
           expectedValue: r.expected_value,
         }));
+        effectiveMatchMode = ruleMatchMode;
+      } else if (selectedRuleId === 'ALL' && inventoryRules.length > 0) {
+        rulesToCheck = inventoryRules.map((r: InventoryRecord) => ({
+          ruleName: r.inventory_name,
+          matchingClaimKey: r.matching_claim_key,
+          expectedValue: r.expected_value,
+        }));
+        effectiveMatchMode = 'all';
+      } else if (selectedRuleId === 'ANY' && inventoryRules.length > 0) {
+        rulesToCheck = inventoryRules.map((r: InventoryRecord) => ({
+          ruleName: r.inventory_name,
+          matchingClaimKey: r.matching_claim_key,
+          expectedValue: r.expected_value,
+        }));
+        effectiveMatchMode = 'any';
       } else if (selectedRule) {
         rulesToCheck = [
           {
@@ -210,6 +297,7 @@ export default function ScannerPage() {
             expectedValue: selectedRule.expected_value,
           },
         ];
+        effectiveMatchMode = 'all';
       }
 
       const extractedPayload = extractJwtPayload(data.trim());
@@ -239,6 +327,8 @@ export default function ScannerPage() {
         data.trim(),
         selectedKey.public_key_string,
         rulesToCheck,
+        undefined,
+        effectiveMatchMode,
       );
 
       if (!verifyRes.payload && extractedPayload) {
@@ -351,8 +441,8 @@ export default function ScannerPage() {
     selectedRuleId === 'ALL'
       ? `All Rules (${inventoryRules.length})`
       : selectedRule
-      ? `${selectedRule.inventory_name} (${selectedRule.matching_claim_key}==${selectedRule.expected_value})`
-      : 'Standard RS256 Check';
+        ? `${selectedRule.inventory_name} (${selectedRule.matching_claim_key}==${selectedRule.expected_value})`
+        : 'Standard RS256 Check';
 
   return (
     <View style={styles.container}>
@@ -415,15 +505,27 @@ export default function ScannerPage() {
           <HStack space="xs" alignItems="center" flex={1}>
             {/* Key Selector Chip */}
             <Pressable
-              style={styles.controlPill}
-              onPress={() => setKeyPickerVisible(true)}
+              style={[
+                styles.controlPill,
+                isStrictKey && { borderColor: '#38bdf8', backgroundColor: 'rgba(56, 189, 248, 0.12)' },
+              ]}
+              onPress={() => {
+                if (isStrictKey) {
+                  Alert.alert(
+                    'Verification Key Enforced',
+                    `This shift is locked to cryptographic verification key "${selectedKey ? selectedKey.name : (strictKeyId || 'Assigned Key')}" by Administrator Shift Policy.`,
+                  );
+                  return;
+                }
+                setKeyPickerVisible(true);
+              }}
             >
               <HStack space="xs" alignItems="center">
-                <Key size={13} color={YELLOW} />
+                {isStrictKey ? <Lock size={13} color="#38bdf8" /> : <Key size={13} color={YELLOW} />}
                 <Text color="#f8fafc" fontSize="$2xs" fontWeight="800" numberOfLines={1}>
                   {selectedKey ? selectedKey.name : 'Select Key'}
                 </Text>
-                <ChevronDown size={12} color={YELLOW} />
+                {!isStrictKey && <ChevronDown size={12} color={YELLOW} />}
               </HStack>
             </Pressable>
 
@@ -431,25 +533,44 @@ export default function ScannerPage() {
             <Pressable
               style={[
                 styles.controlPill,
-                selectedRuleId ? { borderColor: YELLOW, backgroundColor: 'rgba(250, 204, 21, 0.18)' } : null,
+                (isStrictRules || selectedRuleId)
+                  ? { borderColor: YELLOW, backgroundColor: 'rgba(250, 204, 21, 0.18)' }
+                  : null,
               ]}
-              onPress={() => setRulePickerVisible(true)}
+              onPress={() => {
+                if (isStrictRules) {
+                  Alert.alert(
+                    'Shift Rules Enforced',
+                    `Inventory verification rules are strictly enforced by Administrator Shift Policy (${inventoryRules.length} active rule${inventoryRules.length === 1 ? '' : 's'}). Manual switching is disabled.`,
+                  );
+                  return;
+                }
+                setRulePickerVisible(true);
+              }}
             >
               <HStack space="xs" alignItems="center">
-                <SlidersHorizontal size={13} color={selectedRuleId ? YELLOW : MUTED} />
+                {isStrictRules ? (
+                  <Lock size={13} color={YELLOW} />
+                ) : (
+                  <SlidersHorizontal size={13} color={selectedRuleId ? YELLOW : MUTED} />
+                )}
                 <Text
-                  color={selectedRuleId ? YELLOW : '#f8fafc'}
+                  color={selectedRuleId || isStrictRules ? YELLOW : '#f8fafc'}
                   fontSize="$2xs"
                   fontWeight="800"
                   numberOfLines={1}
                 >
-                  {selectedRuleId === 'ALL'
+                  {isStrictRules
+                    ? `Enforced (${inventoryRules.length} · ${ruleMatchMode.toUpperCase()})`
+                    : selectedRuleId === 'ALL'
                     ? 'Rules (ALL)'
+                    : selectedRuleId === 'ANY'
+                    ? 'Rules (ANY)'
                     : selectedRule
-                    ? selectedRule.inventory_name
-                    : 'Rule: None'}
+                      ? selectedRule.inventory_name
+                      : 'Rule: None'}
                 </Text>
-                <ChevronDown size={12} color={MUTED} />
+                {!isStrictRules && <ChevronDown size={12} color={MUTED} />}
               </HStack>
             </Pressable>
           </HStack>
@@ -751,9 +872,26 @@ export default function ScannerPage() {
                 >
                   <HStack justifyContent="space-between" alignItems="center">
                     <Text color={YELLOW} fontSize="$xs" fontWeight="900">
-                      [ALL] Enforce All {inventoryRules.length} Rules
+                      [ALL] Enforce All {inventoryRules.length} Rules (AND)
                     </Text>
                     {selectedRuleId === 'ALL' && <CheckCircle2 size={16} color={YELLOW} />}
+                  </HStack>
+                </Pressable>
+              )}
+
+              {inventoryRules.length > 1 && (
+                <Pressable
+                  style={[styles.pickerItem, selectedRuleId === 'ANY' && styles.pickerItemActive]}
+                  onPress={() => {
+                    setSelectedRuleId('ANY');
+                    setRulePickerVisible(false);
+                  }}
+                >
+                  <HStack justifyContent="space-between" alignItems="center">
+                    <Text color="#38bdf8" fontSize="$xs" fontWeight="900">
+                      [ANY] Match Any {inventoryRules.length} Rules (OR)
+                    </Text>
+                    {selectedRuleId === 'ANY' && <CheckCircle2 size={16} color="#38bdf8" />}
                   </HStack>
                 </Pressable>
               )}
@@ -813,9 +951,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     width: '100%',
     height: '100%',
-    alignItems: 'center',
-    justifyContent: 'center',
-    transform: [{ translateY: -28 }],
   },
   guidanceBadge: {
     position: 'absolute',
@@ -867,12 +1002,16 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   reticleBox: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
     width: RETICLE_SIZE,
     height: RETICLE_SIZE,
+    marginTop: -RETICLE_SIZE / 2,
+    marginLeft: -RETICLE_SIZE / 2,
     borderRadius: 24,
     borderWidth: 1,
     borderColor: 'rgba(250, 204, 21, 0.25)',
-    position: 'relative',
     alignItems: 'center',
     justifyContent: 'center',
   },

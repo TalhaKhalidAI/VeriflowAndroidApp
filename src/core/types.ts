@@ -49,5 +49,7 @@ export type ShiftSession = {
   exp: number;
   iat: number;
   publicKeyId?: number;
+  strict_key_kid?: string;
   offlineCheckoutPending?: boolean;
+  rule_match_mode?: 'all' | 'any';
 };

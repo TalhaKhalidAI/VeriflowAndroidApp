@@ -597,6 +597,7 @@ export async function verifyJwtAgainstPublicKey(
   publicKeyPem: string,
   expectedClaimKeyOrRules?: string | RuleCheck[],
   expectedValue?: string,
+  ruleMatchMode: 'all' | 'any' = 'all',
 ): Promise<VerificationResult> {
   try {
     const cryptoReady = ensureCryptoAvailable();
@@ -739,15 +740,37 @@ export async function verifyJwtAgainstPublicKey(
 
     // Multiple inventory rules check
     if (Array.isArray(expectedClaimKeyOrRules) && expectedClaimKeyOrRules.length > 0) {
-      for (const rule of expectedClaimKeyOrRules) {
-        const actualValue = payload[rule.matchingClaimKey];
-        if (actualValue === undefined || String(actualValue) !== String(rule.expectedValue)) {
+      if (ruleMatchMode === 'any') {
+        let matched = false;
+        let matchedRuleName = '';
+        for (const rule of expectedClaimKeyOrRules) {
+          const actualValue = payload[rule.matchingClaimKey];
+          if (actualValue !== undefined && String(actualValue) === String(rule.expectedValue)) {
+            matched = true;
+            matchedRuleName = rule.ruleName || rule.matchingClaimKey;
+            break;
+          }
+        }
+        if (!matched) {
           return {
             valid: false,
             status: 'fail',
-            reason: `Rule failed [${rule.ruleName || rule.matchingClaimKey}]: claim '${rule.matchingClaimKey}' expected '${rule.expectedValue}' but got '${actualValue ?? 'missing'}'`,
+            reason: `None of ${expectedClaimKeyOrRules.length} rules matched (Mode: ANY). Tag claims did not satisfy any shift rule.`,
             payload: payload as Record<string, any>,
           };
+        }
+      } else {
+        // Mode: ALL (every rule must match)
+        for (const rule of expectedClaimKeyOrRules) {
+          const actualValue = payload[rule.matchingClaimKey];
+          if (actualValue === undefined || String(actualValue) !== String(rule.expectedValue)) {
+            return {
+              valid: false,
+              status: 'fail',
+              reason: `Rule failed [${rule.ruleName || rule.matchingClaimKey}]: claim '${rule.matchingClaimKey}' expected '${rule.expectedValue}' but got '${actualValue ?? 'missing'}'`,
+              payload: payload as Record<string, any>,
+            };
+          }
         }
       }
     }
