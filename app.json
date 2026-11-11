@@ -43,7 +43,8 @@
         }
       ],
       "expo-sqlite",
-      "react-native-quick-crypto"
+      "react-native-quick-crypto",
+      "./plugins/withVeriFlowNetworkSecurity.js"
     ],
     "experiments": {
       "typedRoutes": true,
