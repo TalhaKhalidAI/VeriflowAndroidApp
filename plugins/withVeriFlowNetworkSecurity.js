@@ -1,5 +1,6 @@
 const {
   withAndroidManifest,
+  withAppBuildGradle,
   withDangerousMod,
   withMainApplication,
 } = require('expo/config-plugins');
@@ -232,6 +233,7 @@ import com.facebook.react.bridge.NativeModule
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.uimanager.ViewManager
 
+@Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
 class VeriFlowCustomCaPackage : ReactPackage {
   override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
     return listOf(VeriFlowCustomCaModule(reactContext))
@@ -244,6 +246,15 @@ class VeriFlowCustomCaPackage : ReactPackage {
 `;
 
 function withVeriFlowNetworkSecurity(config) {
+  config = withAppBuildGradle(config, modConfig => {
+    const pkg = (modConfig.android && modConfig.android.package) || 'com.anonymous.veriflow';
+    let contents = modConfig.modResults.contents;
+    contents = contents.replace(/namespace\s+['"][^'"]+['"]/, `namespace '${pkg}'`);
+    contents = contents.replace(/applicationId\s+['"][^'"]+['"]/, `applicationId '${pkg}'`);
+    modConfig.modResults.contents = contents;
+    return modConfig;
+  });
+
   config = withAndroidManifest(config, async modConfig => {
     const manifest = modConfig.modResults.manifest;
     manifest['uses-permission'] = manifest['uses-permission'] || [];
@@ -282,15 +293,14 @@ function withVeriFlowNetworkSecurity(config) {
         'utf8',
       );
 
+      const pkg = (modConfig.android && modConfig.android.package) || 'com.anonymous.veriflow';
       const javaDir = path.join(
         platformRoot,
         'app',
         'src',
         'main',
         'java',
-        'com',
-        'anonymous',
-        'veriflow',
+        ...pkg.split('.'),
       );
       fs.mkdirSync(javaDir, { recursive: true });
       fs.writeFileSync(
@@ -303,6 +313,16 @@ function withVeriFlowNetworkSecurity(config) {
         CUSTOM_CA_PACKAGE_KT,
         'utf8',
       );
+
+      // Clear stale cached autolinking files so ReactNativeApplicationEntryPoint.java uses the active package
+      fs.rmSync(path.join(platformRoot, 'build', 'generated', 'autolinking'), {
+        recursive: true,
+        force: true,
+      });
+      fs.rmSync(path.join(platformRoot, 'app', 'build', 'generated', 'autolinking'), {
+        recursive: true,
+        force: true,
+      });
       return modConfig;
     },
   ]);
@@ -310,10 +330,17 @@ function withVeriFlowNetworkSecurity(config) {
   config = withMainApplication(config, modConfig => {
     let contents = modConfig.modResults.contents;
     if (!contents.includes('VeriFlowCustomCaPackage')) {
-      contents = contents.replace(
-        '// add(MyReactNativePackage())',
-        '// add(MyReactNativePackage())\n          add(VeriFlowCustomCaPackage())',
-      );
+      if (contents.includes('// add(MyReactNativePackage())')) {
+        contents = contents.replace(
+          '// add(MyReactNativePackage())',
+          '// add(MyReactNativePackage())\n          add(VeriFlowCustomCaPackage())',
+        );
+      } else {
+        contents = contents.replace(
+          /PackageList\(this\)\.packages\.apply\s*\{/,
+          'PackageList(this).packages.apply {\n          add(VeriFlowCustomCaPackage())',
+        );
+      }
     }
     if (!contents.includes('VeriFlowCustomCaModule.initOnStartup')) {
       contents = contents.replace(
