@@ -52,5 +52,8 @@
     "web": "expo start --web",
     "lint": "expo lint"
   },
+  "op-sqlite": {
+    "sqlcipher": true
+  },
   "private": true
 }

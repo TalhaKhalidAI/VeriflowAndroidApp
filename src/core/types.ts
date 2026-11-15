@@ -39,6 +39,8 @@ export type ShiftSession = {
   userId: number;
   shiftId: string;
   keyId?: string;
+  signingKeyId?: string;
+  signingKeyKid?: string;
   role?: string;
   permissions: Record<string, boolean>;
   rules?: Array<{
@@ -48,6 +50,8 @@ export type ShiftSession = {
   }> | Record<string, any>;
   exp: number;
   iat: number;
+  monotonicStartMs?: number;
+  monotonicDurationMs?: number;
   publicKeyId?: number;
   strict_key_kid?: string;
   offlineCheckoutPending?: boolean;

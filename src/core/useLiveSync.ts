@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { useAuth } from './authContext';
 import { upsertPublicKey } from './db';
+import { apiFetch } from './jwt';
 
 /**
  * Requirement 4: Live key sync using TanStack Query.
@@ -15,7 +16,7 @@ export function useLiveSync() {
   const keysQuery = useQuery({
     queryKey: ['live_jwks', apiBaseUrl],
     queryFn: async () => {
-      const res = await fetch(`${apiBaseUrl}/app/v1/keys/jwks`);
+      const res = await apiFetch(apiBaseUrl, '/keys/jwks');
       if (!res.ok) throw new Error(`JWKS fetch failed: ${res.status}`);
       return res.json();
     },

@@ -34,6 +34,10 @@ const CUSTOM_CA_MODULE_KT = `package com.anonymous.veriflow
 import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Build
+import android.os.SystemClock
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
@@ -48,6 +52,10 @@ import java.security.SecureRandom
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLEngine
@@ -73,10 +81,42 @@ class VeriFlowCustomCaModule(private val reactContext: ReactApplicationContext) 
     }
   }
 
+  @ReactMethod
+  fun getElapsedRealtime(promise: Promise) {
+    try {
+      promise.resolve(SystemClock.elapsedRealtime().toDouble())
+    } catch (e: Exception) {
+      promise.reject("MONOTONIC_CLOCK_ERROR", e.message ?: "Failed to read SystemClock.elapsedRealtime()", e)
+    }
+  }
+
+  @ReactMethod(isBlockingSynchronousMethod = true)
+  fun getElapsedRealtimeSync(): Double {
+    return SystemClock.elapsedRealtime().toDouble()
+  }
+
+  @ReactMethod
+  fun getOrCreateKeystoreKey(service: String?, promise: Promise) {
+    try {
+      val keyHex = getOrCreateWrappedDbKey(reactContext.applicationContext, service ?: "veriflow_sqlcipher_db_key")
+      promise.resolve(keyHex)
+    } catch (e: Exception) {
+      promise.reject("KEYSTORE_ERROR", e.message ?: "Failed to access Android Keystore", e)
+    }
+  }
+
+  @ReactMethod(isBlockingSynchronousMethod = true)
+  fun getOrCreateKeystoreKeySync(service: String?): String {
+    return getOrCreateWrappedDbKey(reactContext.applicationContext, service ?: "veriflow_sqlcipher_db_key")
+  }
+
   companion object {
     const val NAME = "VeriFlowCustomCa"
     private const val PREFS_NAME = "veriflow_tls_prefs"
     private const val KEY_ROOT_CA_PEM = "root_ca_pem"
+    private const val KEYSTORE_PREFS_NAME = "veriflow_keystore_prefs"
+    private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+    private const val MASTER_KEY_ALIAS = "veriflow_sqlcipher_master_key_v1"
 
     @Volatile
     private var currentPem: String = ""
@@ -87,6 +127,61 @@ class VeriFlowCustomCaModule(private val reactContext: ReactApplicationContext) 
     fun initOnStartup(context: Context) {
       val savedPem = loadSavedRootCaPem(context)
       installOkHttpTlsFactory(context, savedPem)
+    }
+
+    @Synchronized
+    fun getOrCreateWrappedDbKey(context: Context, serviceName: String): String {
+      val prefs = context.getSharedPreferences(KEYSTORE_PREFS_NAME, Context.MODE_PRIVATE)
+      val cipherKeyPref = "wrapped_key_\$serviceName"
+      val ivPref = "wrapped_iv_\$serviceName"
+
+      val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+      if (!keyStore.containsAlias(MASTER_KEY_ALIAS)) {
+        val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+        val spec = KeyGenParameterSpec.Builder(
+          MASTER_KEY_ALIAS,
+          KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+        )
+          .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+          .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+          .setKeySize(256)
+          .build()
+        keyGenerator.init(spec)
+        keyGenerator.generateKey()
+      }
+
+      val secretKey = keyStore.getKey(MASTER_KEY_ALIAS, null) as SecretKey
+      val existingCipherB64 = prefs.getString(cipherKeyPref, null)
+      val existingIvB64 = prefs.getString(ivPref, null)
+
+      if (!existingCipherB64.isNullOrBlank() && !existingIvB64.isNullOrBlank()) {
+        val cipherBytes = Base64.decode(existingCipherB64, Base64.NO_WRAP)
+        val ivBytes = Base64.decode(existingIvB64, Base64.NO_WRAP)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, ivBytes))
+        val plainBytes = cipher.doFinal(cipherBytes)
+        return String(plainBytes, Charsets.UTF_8)
+      }
+
+      val rawBytes = ByteArray(32)
+      SecureRandom().nextBytes(rawBytes)
+      val hexChars = StringBuilder(64)
+      for (b in rawBytes) {
+        hexChars.append(String.format("%02x", b))
+      }
+      val newKeyHex = hexChars.toString()
+
+      val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+      cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+      val ivBytes = cipher.iv
+      val cipherBytes = cipher.doFinal(newKeyHex.toByteArray(Charsets.UTF_8))
+
+      prefs.edit()
+        .putString(cipherKeyPref, Base64.encodeToString(cipherBytes, Base64.NO_WRAP))
+        .putString(ivPref, Base64.encodeToString(ivBytes, Base64.NO_WRAP))
+        .commit()
+
+      return newKeyHex
     }
 
     private fun saveRootCaPem(context: Context, pem: String) {

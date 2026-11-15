@@ -107,6 +107,55 @@ export function buildApiUrl(baseUrl: string, endpoint: string): string {
   return `${base}${withAppV1}`;
 }
 
+function isTlsOrProtocolMismatchError(err: unknown): boolean {
+  const msg = String((err as any)?.message || err || '').toLowerCase();
+  return (
+    msg.includes('unable to parse tls packet header') ||
+    msg.includes('sslexception') ||
+    msg.includes('sslhandshakeexception') ||
+    msg.includes('wrong version number') ||
+    msg.includes('cleartext') ||
+    msg.includes('network request failed') ||
+    msg.includes('fetch failed')
+  );
+}
+
+/**
+ * Executes fetch() against the configured API URL and automatically falls back
+ * between https:// and http:// if the target server responds with a TLS/protocol mismatch
+ * (e.g. `javax.net.ssl.SSLException: Unable to parse TLS packet header` when hitting an HTTP
+ * local IP server with https://, or nginx 400 "plain HTTP request was sent to HTTPS port").
+ */
+export async function apiFetch(
+  baseUrl: string,
+  endpoint: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const primaryUrl = buildApiUrl(baseUrl, endpoint);
+  const altUrl = primaryUrl.startsWith('https://')
+    ? primaryUrl.replace(/^https:\/\//i, 'http://')
+    : primaryUrl.startsWith('http://')
+    ? primaryUrl.replace(/^http:\/\//i, 'https://')
+    : null;
+
+  try {
+    const res = await fetch(primaryUrl, init);
+    // Handle reverse proxies (e.g. nginx) returning 400 when HTTP is sent to an HTTPS port
+    if (res.status === 400 && primaryUrl.startsWith('http://') && altUrl) {
+      const clonedText = await res.clone().text().catch(() => '');
+      if (clonedText.toLowerCase().includes('https port')) {
+        return await fetch(altUrl, init);
+      }
+    }
+    return res;
+  } catch (err) {
+    if (altUrl && isTlsOrProtocolMismatchError(err)) {
+      return await fetch(altUrl, init);
+    }
+    throw err;
+  }
+}
+
 /**
  * Auto-detects whether a pasted or QR-scanned Root CA Certificate is:
  * 1. JSON Bundle ({ root_ca, ca_cert, certificate, cert })

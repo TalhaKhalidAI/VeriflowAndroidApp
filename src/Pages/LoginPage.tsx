@@ -53,6 +53,7 @@ import {
   setAppSetting,
 } from '../core/db';
 import {
+  apiFetch,
   buildApiUrl,
   isLikelyPublicKeyPayload,
   normalizeApiBaseUrl,
@@ -160,7 +161,7 @@ export default function LoginPage() {
     setIsFetchingServerKeys(true);
     const targetJwksUrl = buildApiUrl(apiBaseUrl, '/keys/jwks');
     try {
-      const res = await fetch(targetJwksUrl, {
+      const res = await apiFetch(apiBaseUrl, '/keys/jwks', {
         headers: { Accept: 'application/json' },
       }).catch(() => null);
 
@@ -337,7 +338,7 @@ export default function LoginPage() {
       let isTokenRejectedByServer = false;
 
       try {
-        const activeMeRes = await fetch(buildApiUrl(apiBaseUrl, '/shifts/active/me'), {
+        const activeMeRes = await apiFetch(apiBaseUrl, '/shifts/active/me', {
           headers: { Authorization: `Bearer ${token}` },
         }).catch(() => null);
 
@@ -354,7 +355,7 @@ export default function LoginPage() {
         }
 
         if (!hasActiveServerShift && !isOffline && !isTokenRejectedByServer) {
-          const shiftStatusRes = await fetch(buildApiUrl(apiBaseUrl, `/shifts/${payload.shift_id}`), {
+          const shiftStatusRes = await apiFetch(apiBaseUrl, `/shifts/${payload.shift_id}`, {
             headers: { Authorization: `Bearer ${token}` },
           }).catch(() => null);
 
@@ -472,8 +473,7 @@ export default function LoginPage() {
           };
         });
 
-        const syncUrl = buildApiUrl(apiBaseUrl, `/scans/shifts/${prompt.shiftId}/sync`);
-        const syncRes = await fetch(syncUrl, {
+        const syncRes = await apiFetch(apiBaseUrl, `/scans/shifts/${prompt.shiftId}/sync`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -488,14 +488,13 @@ export default function LoginPage() {
         }
       }
 
-      const checkoutUrl = buildApiUrl(apiBaseUrl, `/shifts/${prompt.shiftId}/checkout`);
-      let checkoutRes = await fetch(checkoutUrl, {
+      let checkoutRes = await apiFetch(apiBaseUrl, `/shifts/${prompt.shiftId}/checkout`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${prompt.token}` },
       }).catch(() => null);
 
       if (!checkoutRes || !checkoutRes.ok) {
-        checkoutRes = await fetch(buildApiUrl(apiBaseUrl, '/shifts/checkout'), {
+        checkoutRes = await apiFetch(apiBaseUrl, '/shifts/checkout', {
           method: 'POST',
           headers: { Authorization: `Bearer ${prompt.token}` },
         }).catch(() => null);
@@ -522,7 +521,7 @@ export default function LoginPage() {
     setIsStartingNewShift(true);
     setErrorMessage(null);
     try {
-      const startRes = await fetch(buildApiUrl(apiBaseUrl, '/shifts/start'), {
+      const startRes = await apiFetch(apiBaseUrl, '/shifts/start', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -536,7 +535,7 @@ export default function LoginPage() {
 
       if (!startRes.ok) {
         if (startRes.status === 409) {
-          const activeMeRes = await fetch(buildApiUrl(apiBaseUrl, '/shifts/active/me'), {
+          const activeMeRes = await apiFetch(apiBaseUrl, '/shifts/active/me', {
             headers: { Authorization: `Bearer ${completedShiftPrompt.token}` },
           }).catch(() => null);
 

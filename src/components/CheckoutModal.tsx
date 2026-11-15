@@ -14,7 +14,7 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Modal, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { useAuth } from '../core/authContext';
 import { getPendingScans, markScansAsSynced, markScansAsFailed, setAppSetting } from '../core/db';
-import { buildApiUrl } from '../core/jwt';
+import { apiFetch } from '../core/jwt';
 
 const BLACK = '#07111d';
 const PANEL = '#0f172a';
@@ -89,9 +89,9 @@ export function CheckoutModal({ visible, onClose }: CheckoutModalProps) {
           };
         });
 
-        const syncUrl = buildApiUrl(apiBaseUrl, `/scans/shifts/${session.shiftId}/sync`);
+        const syncEndpoint = `/scans/shifts/${session.shiftId}/sync`;
         try {
-          const syncRes = await fetch(syncUrl, {
+          const syncRes = await apiFetch(apiBaseUrl, syncEndpoint, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -134,10 +134,9 @@ export function CheckoutModal({ visible, onClose }: CheckoutModalProps) {
       }
 
       // 3. Checkout Shift via POST /shifts/{shift_id}/checkout
-      const checkoutUrl = buildApiUrl(apiBaseUrl, `/shifts/${session.shiftId}/checkout`);
       let checkoutRes: Response | null = null;
       try {
-        checkoutRes = await fetch(checkoutUrl, {
+        checkoutRes = await apiFetch(apiBaseUrl, `/shifts/${session.shiftId}/checkout`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${session.token}`,
@@ -146,7 +145,7 @@ export function CheckoutModal({ visible, onClose }: CheckoutModalProps) {
 
         if (!checkoutRes.ok) {
           // Fallback to self-service checkout endpoint
-          checkoutRes = await fetch(buildApiUrl(apiBaseUrl, '/shifts/checkout'), {
+          checkoutRes = await apiFetch(apiBaseUrl, '/shifts/checkout', {
             method: 'POST',
             headers: {
               Authorization: `Bearer ${session.token}`,

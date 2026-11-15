@@ -10,6 +10,7 @@ import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View, useColorSc
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { CheckoutModal } from '@/components/CheckoutModal';
+import { DatabaseErrorBoundary } from '@/components/DatabaseErrorBoundary';
 import { AuthProvider, useAuth } from '@/core/authContext';
 import { useLiveSync } from '@/core/useLiveSync';
 import LoginPage from '@/Pages/LoginPage';
@@ -136,16 +137,18 @@ export default function RootLayout() {
   const colorScheme = useColorScheme();
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-          <GluestackUIProvider config={config}>
-            <AnimatedSplashOverlay />
-            <MainAppDrawer />
-          </GluestackUIProvider>
-        </ThemeProvider>
-      </AuthProvider>
-    </QueryClientProvider>
+    <DatabaseErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+            <GluestackUIProvider config={config}>
+              <AnimatedSplashOverlay />
+              <MainAppDrawer />
+            </GluestackUIProvider>
+          </ThemeProvider>
+        </AuthProvider>
+      </QueryClientProvider>
+    </DatabaseErrorBoundary>
   );
 }
 

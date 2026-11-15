@@ -49,7 +49,12 @@
           "recordAudioAndroid": false
         }
       ],
-      "expo-sqlite",
+      [
+        "expo-sqlite",
+        {
+          "useSQLCipher": true
+        }
+      ],
       "react-native-quick-crypto",
       "./plugins/withVeriFlowNetworkSecurity.js"
     ],

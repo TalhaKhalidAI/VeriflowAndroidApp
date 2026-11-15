@@ -1,8 +1,22 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
-import { Alert, NativeModules, Platform } from 'react-native';
+import { Alert, AppState, AppStateStatus, NativeModules, Platform } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
-import { getAppSetting, initDatabase, replaceInventoryRules, setAppSetting, syncRulesFromPayload } from './db';
-import { buildApiUrl, normalizeApiBaseUrl, parseRootCaPayload } from './jwt';
+import {
+  DatabaseSecurityError,
+  getAppSetting,
+  initDatabase,
+  replaceInventoryRules,
+  setAppSetting,
+  syncRulesFromPayload,
+} from './db';
+import {
+  apiFetch,
+  buildApiUrl,
+  extractJwtHeader,
+  extractJwtPayload,
+  normalizeApiBaseUrl,
+  parseRootCaPayload,
+} from './jwt';
 import { ShiftSession } from './types';
 
 export interface RefreshPermissionsResult {
@@ -11,11 +25,28 @@ export interface RefreshPermissionsResult {
   error?: string;
 }
 
+interface RevocationDeltaItem {
+  id: number;
+  target_type: string;
+  target_id: string;
+  revoked_by?: number | null;
+  revoked_at: string;
+  reason?: string | null;
+}
+
+interface RevocationDeltaResponse {
+  items: RevocationDeltaItem[];
+  server_time: string;
+  since?: string | null;
+  count: number;
+}
+
 interface AuthContextType {
   session: ShiftSession | null;
   isLoggedIn: boolean;
   isShiftExpired: boolean;
   isLoading: boolean;
+  dbSecurityError: DatabaseSecurityError | null;
   apiBaseUrl: string;
   setApiBaseUrl: (url: string) => Promise<void>;
   rootCaCert: string;
@@ -24,6 +55,7 @@ interface AuthContextType {
   hasPermission: (permission: string) => boolean;
   updateSessionPermissions: (newPerms: Record<string, boolean>, role?: string) => Promise<void>;
   refreshPermissions: () => Promise<RefreshPermissionsResult>;
+  syncRevocationsDelta: () => Promise<boolean>;
   markOfflineCheckout: () => Promise<void>;
   clearOfflineCheckout: () => Promise<void>;
   login: (token: string, payload: any, publicKeyId?: number) => Promise<void>;
@@ -61,11 +93,96 @@ async function applyNativeRootCa(pem: string): Promise<boolean> {
   return false;
 }
 
+/**
+ * Reads Android SystemClock.elapsedRealtime() (milliseconds since boot) via native module.
+ * Immune to user wall-clock tampering; resets to 0 across device reboots.
+ */
+export async function getMonotonicElapsedRealtimeMs(): Promise<number | null> {
+  try {
+    const nativeMod = NativeModules?.VeriFlowCustomCa;
+    if (!nativeMod) {
+      return typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : null;
+    }
+    if (typeof nativeMod.getElapsedRealtimeSync === 'function') {
+      const val = Number(nativeMod.getElapsedRealtimeSync());
+      if (Number.isFinite(val) && val >= 0) return val;
+    }
+    if (typeof nativeMod.getElapsedRealtime === 'function') {
+      const val = Number(await nativeMod.getElapsedRealtime());
+      if (Number.isFinite(val) && val >= 0) return val;
+    }
+  } catch (e) {
+    console.warn('Monotonic clock read failed:', e);
+  }
+  return null;
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<ShiftSession | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [dbSecurityError, setDbSecurityError] = useState<DatabaseSecurityError | null>(null);
   const [apiBaseUrl, setApiBaseUrlState] = useState<string>(DEFAULT_API_URL);
   const [rootCaCert, setRootCaCertState] = useState<string>('');
+  const [monotonicExpired, setMonotonicExpired] = useState<boolean>(false);
+  const revocationLogoutInProgressRef = useRef<boolean>(false);
+
+  const logout = useCallback(async () => {
+    setSession(null);
+    setMonotonicExpired(false);
+    await setAppSetting('active_session', '');
+  }, []);
+
+  /**
+   * Evaluates monotonic clock elapsed time and detects device reboots.
+   * Conservative security policy: if device rebooted (currentElapsed < monotonicStartMs)
+   * or monotonic timestamp is missing on Android, treat the shift as expired and force re-login.
+   */
+  const evaluateMonotonicShiftState = useCallback(
+    async (activeSession: ShiftSession | null, onRebootLogout = true): Promise<boolean> => {
+      if (!activeSession) {
+        setMonotonicExpired(false);
+        return false;
+      }
+
+      const currentElapsedMs = await getMonotonicElapsedRealtimeMs();
+      if (currentElapsedMs !== null) {
+        const startMs = activeSession.monotonicStartMs;
+        const durationMs = activeSession.monotonicDurationMs;
+
+        // 1. Reboot / Missing Monotonic Anchor Detection
+        if (startMs === undefined || !Number.isFinite(startMs) || currentElapsedMs < startMs) {
+          setMonotonicExpired(true);
+          if (onRebootLogout && !revocationLogoutInProgressRef.current) {
+            revocationLogoutInProgressRef.current = true;
+            await logout();
+            Alert.alert(
+              '🔒 Shift Expired (Device Reboot Detected)',
+              'The monotonic shift clock reset due to a device restart. For security, please scan a fresh shift badge to log in.',
+            );
+            revocationLogoutInProgressRef.current = false;
+          }
+          return true;
+        }
+
+        // 2. Monotonic Duration Check (immune to Date.now() rollback)
+        if (durationMs !== undefined && Number.isFinite(durationMs) && durationMs > 0) {
+          const elapsedInShiftMs = currentElapsedMs - startMs;
+          if (elapsedInShiftMs >= durationMs) {
+            setMonotonicExpired(true);
+            return true;
+          }
+        }
+      }
+
+      // 3. Fallback wall-clock check
+      const wallExpired = Boolean(
+        activeSession.exp && Math.floor(Date.now() / 1000) >= activeSession.exp
+      );
+      setMonotonicExpired(wallExpired);
+      return wallExpired;
+    },
+    [logout],
+  );
 
   useEffect(() => {
     async function restore() {
@@ -83,18 +200,45 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const savedSessionJson = await getAppSetting('active_session', '');
         if (savedSessionJson) {
           const parsed: ShiftSession = JSON.parse(savedSessionJson);
-          // Always restore active shift session even if expired so operator
-          // can review history, sync pending records, and complete checkout.
-          setSession(parsed);
+          const currentElapsedMs = await getMonotonicElapsedRealtimeMs();
+
+          // Conservative reboot check on cold start:
+          if (
+            currentElapsedMs !== null &&
+            (parsed.monotonicStartMs === undefined || currentElapsedMs < parsed.monotonicStartMs)
+          ) {
+            await setAppSetting('active_session', '');
+            setSession(null);
+            setMonotonicExpired(true);
+            Alert.alert(
+              '🔒 Shift Expired (Device Reboot)',
+              'Your device was restarted during an active shift. Monotonic timer security requires scanning a fresh shift QR code.',
+            );
+          } else {
+            setSession(parsed);
+            await evaluateMonotonicShiftState(parsed, true);
+          }
         }
-      } catch (e) {
+      } catch (e: any) {
+        if (e instanceof DatabaseSecurityError) {
+          setDbSecurityError(e);
+        }
         console.warn('Failed restoring auth session:', e);
       } finally {
         setIsLoading(false);
       }
     }
     void restore();
-  }, []);
+  }, [evaluateMonotonicShiftState]);
+
+  // Periodic monotonic clock watchdog every 5 seconds
+  useEffect(() => {
+    if (!session) return;
+    const timer = setInterval(() => {
+      void evaluateMonotonicShiftState(session, true);
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [session, evaluateMonotonicShiftState]);
 
   const setApiBaseUrl = async (url: string) => {
     const normalized = normalizeApiBaseUrl(url);
@@ -117,6 +261,150 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return await applyNativeRootCa(parsed.pem);
   };
 
+  /**
+   * Delta Sync (Offline-first revocation & checkout enforcement):
+   * Whenever network is available (foreground transition, reconnect, or periodic poll),
+   * queries GET /revocations/delta?since=<timestamp>. If the current shift, user, or signing key
+   * is in the delta list, invalidates the local shift token and redirects to LoginPage immediately.
+   */
+  const handleRemoteRevocationLogout = useCallback(
+    async (reasonText: string) => {
+      if (revocationLogoutInProgressRef.current) return;
+      revocationLogoutInProgressRef.current = true;
+      try {
+        await logout();
+        Alert.alert(
+          '🛑 Shift Session Terminated',
+          reasonText || 'Your shift or signing key was revoked on the server. You have been logged out.',
+        );
+      } finally {
+        revocationLogoutInProgressRef.current = false;
+      }
+    },
+    [logout],
+  );
+
+  const syncRevocationsDelta = useCallback(async (): Promise<boolean> => {
+    if (!session) return false;
+    try {
+      const savedSince = await getAppSetting('last_revocation_delta_since', '');
+      const fallbackSince =
+        session.iat && session.iat > 0
+          ? new Date((session.iat - 60) * 1000).toISOString()
+          : '';
+      const sinceParam = savedSince || fallbackSince;
+
+      // Always extract live claims/header from token so even pre-existing sessions have key_id & kid
+      const tokenClaims = session.token ? extractJwtPayload(session.token) : null;
+      const tokenHeader = session.token ? extractJwtHeader(session.token) : null;
+
+      const sessionShiftId = String(session.shiftId || tokenClaims?.shift_id || '');
+      const sessionUserId = String(session.userId || tokenClaims?.user_id || '');
+      const sessionSigningKeyId = String(
+        session.signingKeyId || tokenClaims?.key_id || session.keyId || '',
+      );
+      const sessionSigningKeyKid = String(
+        session.signingKeyKid || tokenClaims?.kid || tokenHeader?.kid || '',
+      );
+      const sessionStrictKeyId = String(
+        (session as any).strict_key_id || tokenClaims?.strict_key_id || '',
+      );
+      const sessionStrictKeyKid = String(
+        session.strict_key_kid || tokenClaims?.strict_key_kid || '',
+      );
+
+      const queryParams = new URLSearchParams();
+      if (sinceParam) queryParams.set('since', sinceParam);
+      if (sessionShiftId) queryParams.set('shift_id', sessionShiftId);
+      if (sessionSigningKeyId) queryParams.set('key_id', sessionSigningKeyId);
+      if (sessionSigningKeyKid) queryParams.set('kid', sessionSigningKeyKid);
+      if (sessionStrictKeyId) queryParams.set('strict_key_id', sessionStrictKeyId);
+      if (sessionStrictKeyKid) queryParams.set('strict_key_kid', sessionStrictKeyKid);
+
+      const qs = queryParams.toString();
+      const endpoint = qs ? `/revocations/delta?${qs}` : '/revocations/delta';
+
+      const res = await apiFetch(apiBaseUrl, endpoint, {
+        headers: {
+          Accept: 'application/json',
+          ...(session.token ? { Authorization: `Bearer ${session.token}` } : {}),
+        },
+      }).catch(() => null);
+
+      if (!res || !res.ok) {
+        return false;
+      }
+
+      const data = (await res.json()) as RevocationDeltaResponse;
+      if (data?.server_time) {
+        await setAppSetting('last_revocation_delta_since', data.server_time);
+      }
+
+      if (Array.isArray(data?.items) && data.items.length > 0) {
+        const candidateKeys = new Set(
+          [
+            sessionSigningKeyId,
+            sessionSigningKeyKid,
+            String(session.keyId || ''),
+            sessionStrictKeyId,
+            sessionStrictKeyKid,
+          ].filter(Boolean),
+        );
+
+        const matched = data.items.find(item => {
+          const targetType = String(item.target_type || '').toLowerCase();
+          const targetId = String(item.target_id || '');
+          if (!targetId) return false;
+
+          if (targetType === 'shift' && sessionShiftId && targetId === sessionShiftId) {
+            return true;
+          }
+          if (targetType === 'user' && sessionUserId && targetId === sessionUserId) {
+            return true;
+          }
+          if (targetType === 'key' && candidateKeys.has(targetId)) {
+            return true;
+          }
+          return false;
+        });
+
+        if (matched) {
+          const reasonMsg = matched.reason
+            ? `Your ${matched.target_type} was terminated on the server (${matched.reason}).`
+            : `Your ${matched.target_type} was revoked or checked out on the server.`;
+          await handleRemoteRevocationLogout(reasonMsg);
+          return true;
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }, [session, apiBaseUrl, handleRemoteRevocationLogout]);
+
+  // Trigger Delta Sync + Monotonic Check immediately when app returns to foreground
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState: AppStateStatus) => {
+      if (nextState === 'active' && session) {
+        void evaluateMonotonicShiftState(session, true);
+        void syncRevocationsDelta();
+      }
+    });
+    return () => subscription.remove();
+  }, [session, evaluateMonotonicShiftState, syncRevocationsDelta]);
+
+  // Fast Background Delta Sync via TanStack Query (every 3 seconds when online)
+  useQuery({
+    queryKey: ['revocations_delta_sync', session?.shiftId, session?.userId, apiBaseUrl],
+    queryFn: async () => {
+      return await syncRevocationsDelta();
+    },
+    enabled: Boolean(session?.token && session?.shiftId),
+    refetchInterval: 3000,
+    refetchIntervalInBackground: true,
+    retry: false,
+  });
+
   const hasPermission = (perm: string): boolean => {
     if (!session) return false;
     if (session.role === 'admin' || session.permissions?.['*'] === true) {
@@ -127,7 +415,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return true;
     }
 
-    // Strict scan permissions checking - NEVER alias to user account settings
     if (perm === 'scans.create') {
       return session.permissions?.['scans.create'] === true;
     }
@@ -223,7 +510,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ? { ...payload.permissions }
       : {};
 
-    // Standard shift operator defaults for mobile worker:
     if (perms['scans.view.own'] === undefined) perms['scans.view.own'] = true;
     if (perms['scans.create'] === undefined) perms['scans.create'] = true;
     if (perms['inventory_rules.view'] === undefined) perms['inventory_rules.view'] = true;
@@ -234,7 +520,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       payload.allow_rule_override === true
     );
 
-    // Store embedded inventory rules (supports dict or array) to local SQLite DB
     if (payload.rules) {
       try {
         if (!canOverrideRules && Array.isArray(payload.rules)) {
@@ -253,9 +538,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    // Try fetching fresh permissions from server API in background if online
     try {
-      const profileRes = await fetch(buildApiUrl(apiBaseUrl, '/users/users_config/me'), {
+      const profileRes = await apiFetch(apiBaseUrl, '/users/users_config/me', {
         headers: { Authorization: `Bearer ${token.trim()}` },
       }).catch(() => null);
 
@@ -272,17 +556,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Offline fallback: keep token permissions
     }
 
+    const expSec = Number(payload.exp || 0);
+    const iatSec = Number(payload.iat || Math.floor(Date.now() / 1000));
+    const nowWallSec = Math.floor(Date.now() / 1000);
+    // Calculate shift duration from JWT claims (exp - iat), bounded by remaining wall time if positive
+    const claimDurationSec = expSec > iatSec ? expSec - iatSec : Math.max(0, expSec - nowWallSec);
+    const monotonicStartMs = await getMonotonicElapsedRealtimeMs();
+    const monotonicDurationMs = claimDurationSec * 1000;
+
+    const header = extractJwtHeader(token.trim());
+    const signingKeyId = payload.key_id ? String(payload.key_id) : undefined;
+    const signingKeyKid =
+      payload.kid ? String(payload.kid) : header?.kid ? String(header.kid) : undefined;
+
     const newSession: ShiftSession & Record<string, any> = {
       token: token.trim(),
       sub: String(payload.sub || payload.email || 'operator'),
       userId: Number(payload.user_id || 0),
       shiftId: String(payload.shift_id || ''),
-      keyId: payload.strict_key_id ? String(payload.strict_key_id) : (payload.key_id ? String(payload.key_id) : undefined),
+      keyId: payload.strict_key_id ? String(payload.strict_key_id) : signingKeyId,
+      signingKeyId,
+      signingKeyKid,
       role: payload.role ? String(payload.role) : 'user',
       permissions: perms,
       rules: payload.rules || [],
-      exp: Number(payload.exp || 0),
-      iat: Number(payload.iat || 0),
+      exp: expSec,
+      iat: iatSec,
+      monotonicStartMs: monotonicStartMs ?? undefined,
+      monotonicDurationMs,
       publicKeyId,
       strict_rules: payload.strict_rules,
       strict_key: payload.strict_key,
@@ -293,9 +594,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       rule_match_mode: payload.rule_match_mode === 'any' ? 'any' : 'all',
     };
 
+    // Anchor delta sync timestamp to shift issue time so any post-issue revocation is caught
+    if (iatSec > 0) {
+      await setAppSetting(
+        'last_revocation_delta_since',
+        new Date((iatSec - 5) * 1000).toISOString(),
+      );
+    }
+
+    setMonotonicExpired(false);
     setSession(newSession);
     await setAppSetting('active_session', JSON.stringify(newSession));
   };
+
+  const isShiftExpired = Boolean(
+    monotonicExpired || (session?.exp && Math.floor(Date.now() / 1000) >= session.exp)
+  );
 
   // TanStack Query: Live background permission polling & real-time notification
   const { data: remoteProfile } = useQuery({
@@ -303,13 +617,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     queryFn: async () => {
       if (!session?.token) return null;
       try {
-        const url = buildApiUrl(apiBaseUrl, '/users/users_config/me');
-        const res = await fetch(url, {
+        const res = await apiFetch(apiBaseUrl, '/users/users_config/me', {
           headers: {
             Authorization: `Bearer ${session.token}`,
             Accept: 'application/json',
           },
         });
+        if (res.status === 401) {
+          const errBody = await res.json().catch(() => ({}));
+          const detail = String(errBody?.detail || errBody?.error || 'Session ended or key revoked on server.');
+          if (detail.toLowerCase().includes('expired') || isShiftExpired) {
+            // Freeze scanning locally without logging out so the operator can still sync & checkout
+            setMonotonicExpired(true);
+            return null;
+          }
+          await handleRemoteRevocationLogout(detail);
+          return null;
+        }
         if (!res.ok) {
           return null;
         }
@@ -318,8 +642,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return null;
       }
     },
-    enabled: Boolean(session?.token && session?.userId),
-    refetchInterval: 10000, // Check for admin updates every 10 seconds!
+    enabled: Boolean(session?.token && session?.userId && !isShiftExpired),
+    refetchInterval: 10000,
     refetchIntervalInBackground: true,
   });
 
@@ -338,7 +662,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const currentPerms = session.permissions || {};
 
-    // Initialize baseline on first fetch so we don't alert on initial startup
     if (!prevPermsRef.current) {
       prevPermsRef.current = { ...currentPerms, ...serverPerms };
       return;
@@ -348,14 +671,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const added: string[] = [];
     const removed: string[] = [];
 
-    // Detect newly granted permissions
     for (const [k, v] of Object.entries(serverPerms)) {
       if (v && !prev[k]) {
         added.push(k);
       }
     }
 
-    // Detect newly revoked permissions
     for (const [k, v] of Object.entries(prev)) {
       if (v && !serverPerms[k]) {
         removed.push(k);
@@ -396,8 +717,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { ok: false, error: 'No active session token found.' };
     }
     try {
+      // Also run delta revocation sync when refreshing permissions
+      const wasRevoked = await syncRevocationsDelta();
+      if (wasRevoked) {
+        return {
+          ok: false,
+          status: 401,
+          error: 'Shift was revoked or checked out on the server.',
+        };
+      }
+
       const url = buildApiUrl(apiBaseUrl, '/users/users_config/me');
-      const res = await fetch(url, {
+      const res = await apiFetch(apiBaseUrl, '/users/users_config/me', {
         headers: { Authorization: `Bearer ${session.token}` },
       }).catch(() => null);
 
@@ -432,6 +763,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const errMsg = errBody.detail || errBody.error || errBody.message || `Server responded with status ${res.status}`;
 
       if (res.status === 401) {
+        if (String(errMsg).toLowerCase().includes('revoked')) {
+          await handleRemoteRevocationLogout(String(errMsg));
+        }
         return {
           ok: false,
           status: 401,
@@ -452,7 +786,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.warn('refreshPermissions failed:', e);
       return { ok: false, error: e.message || 'Unknown error refreshing permissions.' };
     }
-  }, [session?.token, apiBaseUrl]);
+  }, [session?.token, apiBaseUrl, syncRevocationsDelta, handleRemoteRevocationLogout]);
 
   const updateSessionPermissions = useCallback(async (newPerms: Record<string, boolean>, role?: string) => {
     setSession(prev => {
@@ -491,18 +825,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  const logout = useCallback(async () => {
-    setSession(null);
-    await setAppSetting('active_session', '');
-  }, []);
-
-  const isShiftExpired = Boolean(
-    session?.exp && Math.floor(Date.now() / 1000) >= session.exp
-  );
-
-  // Strict Policy enforcements directly driven by Shift modal checkboxes:
-  // If strict_rules was checked on shift -> rules are strictly locked on the phone.
-  // If strict_rules was unchecked -> operator can freely select / toggle rules on the phone.
   const isStrictRules = Boolean(
     session &&
     ((session as any).strict_rules !== undefined
@@ -513,8 +835,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
   const canOverrideRules = !isStrictRules;
 
-  // If strict_key was checked on shift -> verification key is strictly locked to strictKeyId.
-  // If strict_key was unchecked -> operator can freely select other keys on the phone.
   const isStrictKey = Boolean(
     session &&
     ((session as any).strict_key !== undefined
@@ -538,13 +858,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     queryFn: async () => {
       if (!session?.token) return null;
       try {
-        const url = buildApiUrl(apiBaseUrl, '/shifts/active/rules');
-        const res = await fetch(url, {
+        const res = await apiFetch(apiBaseUrl, '/shifts/active/rules', {
           headers: {
             Authorization: `Bearer ${session.token}`,
             Accept: 'application/json',
           },
         });
+        if (res.status === 401) {
+          const errBody = await res.json().catch(() => ({}));
+          const detail = String(errBody?.detail || errBody?.error || 'Shift session ended or signing key revoked.');
+          if (detail.toLowerCase().includes('expired') || isShiftExpired) {
+            // Freeze scanning locally without logging out so the operator can still sync & checkout
+            setMonotonicExpired(true);
+            return null;
+          }
+          await handleRemoteRevocationLogout(detail);
+          return null;
+        }
         if (!res.ok) return null;
         return (await res.json()) as Array<{
           id: string | number;
@@ -557,7 +887,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return null;
       }
     },
-    enabled: Boolean(session?.token && session?.shiftId),
+    enabled: Boolean(session?.token && session?.shiftId && !isShiftExpired),
     refetchInterval: 15000,
     refetchIntervalInBackground: true,
   });
@@ -592,6 +922,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [refetchRemoteRules, isStrictRules]);
 
+  if (dbSecurityError) {
+    throw dbSecurityError;
+  }
+
   return (
     <AuthContext.Provider
       value={{
@@ -599,6 +933,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isLoggedIn: Boolean(session),
         isShiftExpired,
         isLoading,
+        dbSecurityError,
         apiBaseUrl,
         setApiBaseUrl,
         rootCaCert,
@@ -607,6 +942,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         hasPermission,
         updateSessionPermissions,
         refreshPermissions,
+        syncRevocationsDelta,
         markOfflineCheckout,
         clearOfflineCheckout,
         login,

@@ -31,6 +31,7 @@ import {
   markScansAsSynced,
   markScansAsFailed,
 } from '../core/db';
+import { apiFetch } from '../core/jwt';
 import { ScanRecord } from '../core/types';
 
 const BLACK = '#07111d';
@@ -69,7 +70,7 @@ export default function SyncStatusPage() {
     queryKey: ['server_health_check', apiBaseUrl],
     queryFn: async () => {
       try {
-        const res = await fetch(`${apiBaseUrl}/app/v1/keys/jwks`, { method: 'GET' });
+        const res = await apiFetch(apiBaseUrl, '/keys/jwks', { method: 'GET' });
         return res.ok;
       } catch {
         return false;
@@ -123,8 +124,7 @@ export default function SyncStatusPage() {
         };
       });
 
-      const syncUrl = `${apiBaseUrl}/app/v1/scans/shifts/${session.shiftId}/sync`;
-      const res = await fetch(syncUrl, {
+      const res = await apiFetch(apiBaseUrl, `/scans/shifts/${session.shiftId}/sync`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -146,8 +146,7 @@ export default function SyncStatusPage() {
       // If offline checkout was pending, checkout the shift now that all data is transferred
       if (session.offlineCheckoutPending) {
         try {
-          const checkoutUrl = `${apiBaseUrl}/app/v1/shifts/${session.shiftId}/checkout`;
-          await fetch(checkoutUrl, {
+          await apiFetch(apiBaseUrl, `/shifts/${session.shiftId}/checkout`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${session.token}` },
           });

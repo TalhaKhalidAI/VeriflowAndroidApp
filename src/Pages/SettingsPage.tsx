@@ -55,6 +55,7 @@ import {
   updatePublicKey,
 } from '../core/db';
 import {
+  apiFetch,
   buildApiUrl,
   normalizeApiBaseUrl,
   normalizePublicKey,
@@ -309,7 +310,7 @@ export default function SettingsPage() {
     setIsFetchingServerKeys(true);
     const targetJwksUrl = buildApiUrl(apiBaseUrl, '/keys/jwks');
     try {
-      const res = await fetch(targetJwksUrl, {
+      const res = await apiFetch(apiBaseUrl, '/keys/jwks', {
         headers: { Accept: 'application/json' },
       }).catch(() => null);
 
