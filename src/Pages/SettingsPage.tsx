@@ -82,6 +82,8 @@ export default function SettingsPage() {
     refreshPermissions,
     apiBaseUrl,
     setApiBaseUrl,
+    keySyncIntervalMs,
+    setKeySyncIntervalMs,
     rootCaCert,
     setRootCaCert,
     isStrictRules,
@@ -137,6 +139,7 @@ export default function SettingsPage() {
 
   // Network & Root CA state
   const [serverUrl, setServerUrl] = useState(apiBaseUrl);
+  const [keySyncInput, setKeySyncInput] = useState(String(keySyncIntervalMs));
   const [rootCaInput, setRootCaInput] = useState(rootCaCert);
   const [caQrScannerVisible, setCaQrScannerVisible] = useState(false);
   const [rootCaModalVisible, setRootCaModalVisible] = useState(false);
@@ -146,6 +149,10 @@ export default function SettingsPage() {
   useEffect(() => {
     setServerUrl(apiBaseUrl);
   }, [apiBaseUrl]);
+
+  useEffect(() => {
+    setKeySyncInput(String(keySyncIntervalMs));
+  }, [keySyncIntervalMs]);
 
   useEffect(() => {
     setRootCaInput(rootCaCert);
@@ -1225,6 +1232,27 @@ export default function SettingsPage() {
                 </Input>
               </VStack>
 
+              {/* Public Key Live Sync Interval */}
+              <VStack space="xs" mb="$4">
+                <Text color={MUTED} fontSize="$2xs" fontWeight="700">
+                  PUBLIC KEY SYNC INTERVAL (MS):
+                </Text>
+                <Input bg={PANEL_ALT} borderColor="#334155" borderRadius="$md">
+                  <InputField
+                    value={keySyncInput}
+                    onChangeText={setKeySyncInput}
+                    placeholder="15000 (auto-sets 15000 ms if empty or 0)"
+                    placeholderTextColor="#64748b"
+                    color="#f8fafc"
+                    fontSize="$xs"
+                    keyboardType="numeric"
+                  />
+                </Input>
+                <Text color={MUTED} fontSize="$2xs">
+                  Default is 15000 ms (15s). Leaving blank or entering 0 automatically sets 15000 ms.
+                </Text>
+              </VStack>
+
               {/* ROOT CA CERTIFICATE SECTION */}
               <Box
                 bg={PANEL_ALT}
@@ -1376,6 +1404,8 @@ export default function SettingsPage() {
                     }
                     await setApiBaseUrl(normalizedUrl);
                     setServerUrl(normalizedUrl);
+                    const savedSyncMs = await setKeySyncIntervalMs(keySyncInput);
+                    setKeySyncInput(String(savedSyncMs));
                     let appliedToNative = false;
                     if (rootCaInput.trim()) {
                       appliedToNative = await setRootCaCert(rootCaInput.trim());

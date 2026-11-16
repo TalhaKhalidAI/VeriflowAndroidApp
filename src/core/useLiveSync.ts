@@ -10,18 +10,23 @@ import { apiFetch } from './jwt';
  * - Token permissions are governed strictly by the cryptographically signed Shift Token.
  */
 export function useLiveSync() {
-  const { isLoggedIn, apiBaseUrl } = useAuth();
+  const { isLoggedIn, apiBaseUrl, keySyncIntervalMs } = useAuth();
+  const effectiveInterval = keySyncIntervalMs > 0 ? keySyncIntervalMs : 15000;
 
   // Live Public Keys (JWKS) Query using TanStack Query
   const keysQuery = useQuery({
     queryKey: ['live_jwks', apiBaseUrl],
     queryFn: async () => {
-      const res = await apiFetch(apiBaseUrl, '/keys/jwks');
-      if (!res.ok) throw new Error(`JWKS fetch failed: ${res.status}`);
-      return res.json();
+      try {
+        const res = await apiFetch(apiBaseUrl, '/keys/jwks');
+        if (!res.ok) return null;
+        return await res.json();
+      } catch {
+        return null;
+      }
     },
     enabled: Boolean(isLoggedIn),
-    refetchInterval: 60000, // Check every 60s
+    refetchInterval: effectiveInterval,
     retry: false,
   });
 

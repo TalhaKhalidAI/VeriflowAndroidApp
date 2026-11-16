@@ -29,7 +29,7 @@ const queryClient = new QueryClient({
 });
 
 function MainAppDrawer() {
-  const { session, isLoggedIn, isLoading } = useAuth();
+  const { session, isLoggedIn, isLoading, revocationSyncError } = useAuth();
   const { width } = useWindowDimensions();
   const [checkoutVisible, setCheckoutVisible] = useState(false);
 
@@ -124,6 +124,13 @@ function MainAppDrawer() {
           }}
         />
       </Drawer>
+
+      {revocationSyncError && (
+        <View style={styles.syncWarningBanner}>
+          <View style={styles.syncWarningDot} />
+          <Text style={styles.syncWarningText}>{revocationSyncError}</Text>
+        </View>
+      )}
 
       <CheckoutModal
         visible={checkoutVisible}
@@ -250,5 +257,27 @@ const styles = StyleSheet.create({
     color: '#ef4444',
     fontSize: 12,
     fontWeight: '800',
+  },
+  syncWarningBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(127, 29, 29, 0.92)',
+    borderTopWidth: 1,
+    borderTopColor: '#ef4444',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  syncWarningDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#ef4444',
+  },
+  syncWarningText: {
+    color: '#fecaca',
+    fontSize: 12,
+    fontWeight: '700',
   },
 });

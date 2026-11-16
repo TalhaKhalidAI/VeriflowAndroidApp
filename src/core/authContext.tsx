@@ -56,6 +56,9 @@ interface AuthContextType {
   updateSessionPermissions: (newPerms: Record<string, boolean>, role?: string) => Promise<void>;
   refreshPermissions: () => Promise<RefreshPermissionsResult>;
   syncRevocationsDelta: () => Promise<boolean>;
+  revocationSyncError: string | null;
+  keySyncIntervalMs: number;
+  setKeySyncIntervalMs: (val: number | string) => Promise<number>;
   markOfflineCheckout: () => Promise<void>;
   clearOfflineCheckout: () => Promise<void>;
   login: (token: string, payload: any, publicKeyId?: number) => Promise<void>;
@@ -117,6 +120,8 @@ export async function getMonotonicElapsedRealtimeMs(): Promise<number | null> {
   return null;
 }
 
+const DEFAULT_KEY_SYNC_INTERVAL_MS = 15000;
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<ShiftSession | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -124,11 +129,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [apiBaseUrl, setApiBaseUrlState] = useState<string>(DEFAULT_API_URL);
   const [rootCaCert, setRootCaCertState] = useState<string>('');
   const [monotonicExpired, setMonotonicExpired] = useState<boolean>(false);
+  const [revocationSyncError, setRevocationSyncError] = useState<string | null>(null);
+  const [keySyncIntervalMs, setKeySyncIntervalMsState] = useState<number>(DEFAULT_KEY_SYNC_INTERVAL_MS);
   const revocationLogoutInProgressRef = useRef<boolean>(false);
 
   const logout = useCallback(async () => {
     setSession(null);
     setMonotonicExpired(false);
+    setRevocationSyncError(null);
     await setAppSetting('active_session', '');
   }, []);
 
@@ -191,6 +199,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const savedUrl = await getAppSetting('api_base_url', DEFAULT_API_URL);
         if (savedUrl) setApiBaseUrlState(normalizeApiBaseUrl(savedUrl));
 
+        const savedSyncInterval = await getAppSetting('key_sync_interval_ms', String(DEFAULT_KEY_SYNC_INTERVAL_MS));
+        const parsedSyncInterval = Number(savedSyncInterval);
+        setKeySyncIntervalMsState(
+          Number.isFinite(parsedSyncInterval) && parsedSyncInterval > 0
+            ? Math.round(parsedSyncInterval)
+            : DEFAULT_KEY_SYNC_INTERVAL_MS
+        );
+
         const savedRootCa = await getAppSetting('root_ca_cert', '');
         if (savedRootCa) {
           setRootCaCertState(savedRootCa);
@@ -245,6 +261,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!normalized) return;
     setApiBaseUrlState(normalized);
     await setAppSetting('api_base_url', normalized);
+  };
+
+  const setKeySyncIntervalMs = async (val: number | string): Promise<number> => {
+    const num = typeof val === 'string' ? Number(val.trim()) : Number(val);
+    const resolved = Number.isFinite(num) && num > 0 ? Math.round(num) : DEFAULT_KEY_SYNC_INTERVAL_MS;
+    setKeySyncIntervalMsState(resolved);
+    await setAppSetting('key_sync_interval_ms', String(resolved));
+    return resolved;
   };
 
   const setRootCaCert = async (pemOrEmpty: string): Promise<boolean> => {
@@ -332,9 +356,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }).catch(() => null);
 
       if (!res || !res.ok) {
+        const errMsg = 'Server unreachable. Revocation checks paused.';
+        setRevocationSyncError(errMsg);
+        void setAppSetting('last_sync_error', errMsg);
         return false;
       }
 
+      setRevocationSyncError(null);
+      void setAppSetting('last_sync_error', '');
       const data = (await res.json()) as RevocationDeltaResponse;
       if (data?.server_time) {
         await setAppSetting('last_revocation_delta_since', data.server_time);
@@ -378,6 +407,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       return false;
     } catch {
+      const errMsg = 'Server unreachable. Revocation checks paused.';
+      setRevocationSyncError(errMsg);
+      void setAppSetting('last_sync_error', errMsg);
       return false;
     }
   }, [session, apiBaseUrl, handleRemoteRevocationLogout]);
@@ -936,6 +968,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         dbSecurityError,
         apiBaseUrl,
         setApiBaseUrl,
+        keySyncIntervalMs,
+        setKeySyncIntervalMs,
         rootCaCert,
         setRootCaCert,
         isNativeCaAvailable,
@@ -943,6 +977,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         updateSessionPermissions,
         refreshPermissions,
         syncRevocationsDelta,
+        revocationSyncError,
         markOfflineCheckout,
         clearOfflineCheckout,
         login,
