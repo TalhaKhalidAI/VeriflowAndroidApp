@@ -51,8 +51,8 @@ export default function HomePage() {
   const [rulesCount, setRulesCount] = useState<number>(0);
   const [isLoadingStats, setIsLoadingStats] = useState<boolean>(true);
 
-  const canScan = hasPermission('scans.create') && !isShiftExpired;
-  const canViewHistory = hasPermission('scans.view');
+  const canScan = hasPermission('android.scans.create') && !isShiftExpired;
+  const canViewHistory = hasPermission('android.scans.view.own');
 
   const refreshData = useCallback(async () => {
     try {

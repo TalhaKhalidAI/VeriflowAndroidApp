@@ -69,11 +69,11 @@ export default function HistoryPage() {
   const [copiedPayload, setCopiedPayload] = useState<boolean>(false);
   const [inspectTab, setInspectTab] = useState<'CLAIMS' | 'RAW'>('CLAIMS');
 
-  const canViewAny = hasPermission('scans.view.any') || session?.role === 'admin';
-  const canViewOwn = hasPermission('scans.view.own') || hasPermission('scans.view');
+  const canViewAny = hasPermission('android.scans.view.any') || session?.role === 'admin';
+  const canViewOwn = hasPermission('android.scans.view.own');
   const canView = canViewAny || canViewOwn;
-  const canUpdate = hasPermission('scans.update');
-  const canDelete = hasPermission('scans.delete');
+  const canUpdate = hasPermission('android.scans.update');
+  const canDelete = hasPermission('android.scans.delete');
 
   const loadData = async () => {
     if (!canView) return;

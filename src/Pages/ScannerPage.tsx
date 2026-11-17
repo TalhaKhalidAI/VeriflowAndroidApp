@@ -91,7 +91,7 @@ export default function ScannerPage() {
   const { session, hasPermission, isShiftExpired, isStrictRules, isStrictKey, strictKeyId, strictKeyKid, ruleMatchMode, apiBaseUrl } = useAuth();
   const [permission, requestPermission] = useCameraPermissions();
 
-  const canScan = hasPermission('scans.create') && !isShiftExpired;
+  const canScan = hasPermission('android.scans.create') && !isShiftExpired;
 
   // Keystore & Rules state
   const [publicKeys, setPublicKeys] = useState<PublicKeyRecord[]>([]);
@@ -229,10 +229,10 @@ export default function ScannerPage() {
 
     // Auto-detect if scanned QR is a Public Key rather than an item tag
     if (isLikelyPublicKeyPayload(data.trim())) {
-      if (!hasPermission('keys.create')) {
+      if (!hasPermission('android.keys.create')) {
         Alert.alert(
           'Public Key Detected',
-          'Scanned QR is a Public Key, but your shift token lacks "keys.create" permission.',
+          'Scanned QR is a Public Key, but your account lacks "android.keys.create" permission.',
         );
       } else {
         try {

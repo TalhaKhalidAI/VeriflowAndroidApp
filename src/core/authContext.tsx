@@ -447,8 +447,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return true;
     }
 
+    if (perm === 'android.scans.create') {
+      if (session.permissions?.['android.scans.create'] === false) return false;
+      if (session.permissions?.['android.scans.create'] === true) return true;
+      return session.permissions?.['scans.create'] !== false;
+    }
+
+    const androidFallbackMap: Record<string, string[]> = {
+      'android.keys.view': ['keys.view'],
+      'android.keys.create': ['keys.create'],
+      'android.keys.update': ['keys.update'],
+      'android.keys.revoke': ['keys.revoke'],
+      'android.keys.delete': ['keys.delete', 'keys.revoke'],
+      'android.inventory_rules.view': ['inventory_rules.view', 'inventory_rules'],
+      'android.inventory_rules.create': ['inventory_rules.create', 'inventory_rules'],
+      'android.inventory_rules.update': ['inventory_rules.update', 'inventory_rules'],
+      'android.inventory_rules.delete': ['inventory_rules.delete', 'inventory_rules'],
+      'android.scans.view.any': ['scans.view.any'],
+      'android.scans.view.own': ['scans.view.own', 'scans.view', 'scans.view.any'],
+      'android.scans.update': ['scans.update'],
+      'android.scans.delete': ['scans.delete'],
+    };
+
+    if (perm in androidFallbackMap) {
+      if (session.permissions?.[perm] === false) return false;
+      if (
+        perm === 'android.scans.view.own' &&
+        session.permissions?.['android.scans.view.any'] === true
+      ) {
+        return true;
+      }
+      return androidFallbackMap[perm].some(
+        fallback => session.permissions?.[fallback] === true,
+      );
+    }
+
     if (perm === 'scans.create') {
-      return session.permissions?.['scans.create'] === true;
+      if (session.permissions?.['android.scans.create'] === false) return false;
+      return session.permissions?.['scans.create'] !== false;
     }
 
     if (perm === 'scans.view' || perm === 'scans.view.own') {
@@ -544,6 +580,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     if (perms['scans.view.own'] === undefined) perms['scans.view.own'] = true;
     if (perms['scans.create'] === undefined) perms['scans.create'] = true;
+    if (perms['android.scans.create'] === undefined) perms['android.scans.create'] = true;
     if (perms['inventory_rules.view'] === undefined) perms['inventory_rules.view'] = true;
 
     const canOverrideRules = Boolean(

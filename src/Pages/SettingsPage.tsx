@@ -97,15 +97,17 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('KEYS');
 
   // Permission gates
-  const canViewRules = hasPermission('inventory_rules.view');
-  const canCreateRules = hasPermission('inventory_rules.create');
-  const canUpdateRules = hasPermission('inventory_rules.update');
-  const canDeleteRules = hasPermission('inventory_rules.delete');
+  const canViewRules = hasPermission('android.inventory_rules.view');
+  const canCreateRules = hasPermission('android.inventory_rules.create');
+  const canUpdateRules = hasPermission('android.inventory_rules.update');
+  const canDeleteRules = hasPermission('android.inventory_rules.delete');
 
-  const canViewKeys = hasPermission('keys.view');
-  const canCreateKeys = hasPermission('keys.create');
-  const canUpdateKeys = hasPermission('keys.update');
-  const canDeleteKeys = hasPermission('keys.delete') || hasPermission('keys.revoke');
+  const canViewKeys = hasPermission('android.keys.view');
+  const canCreateKeys = hasPermission('android.keys.create');
+  const canUpdateKeys = hasPermission('android.keys.update');
+  const canDeleteKeys =
+    hasPermission('android.keys.delete') || hasPermission('android.keys.revoke');
+  const canUpdateAndroidConfig = hasPermission('android.config.update');
   const canDeleteAllData = hasPermission('user.delete_all_data');
 
   // Public Keys state
@@ -176,6 +178,29 @@ export default function SettingsPage() {
   useEffect(() => {
     void refresh();
   }, [canViewKeys, canViewRules]);
+
+  useEffect(() => {
+    if (!canCreateKeys) {
+      setKeyQrScannerVisible(false);
+      setPublicKeyModalVisible(false);
+      setIsKeyScannerTorchOn(false);
+      setKeyScanLock(false);
+    }
+  }, [canCreateKeys]);
+
+  useEffect(() => {
+    if (!canUpdateKeys) {
+      setEditingKey(null);
+    }
+  }, [canUpdateKeys]);
+
+  useEffect(() => {
+    if (!canUpdateAndroidConfig) {
+      setCaQrScannerVisible(false);
+      setRootCaModalVisible(false);
+      setCaScanLock(false);
+    }
+  }, [canUpdateAndroidConfig]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1218,10 +1243,11 @@ export default function SettingsPage() {
                 <Text color={MUTED} fontSize="$2xs" fontWeight="700">
                   API BASE URL:
                 </Text>
-                <Input variant="outline" size="md" borderColor="#334155">
+                <Input variant="outline" size="md" borderColor="#334155" isDisabled={!canUpdateAndroidConfig}>
                   <InputField
                     value={serverUrl}
                     onChangeText={setServerUrl}
+                    editable={canUpdateAndroidConfig}
                     placeholder="https://veriflow.talhahub.io/api"
                     placeholderTextColor="#64748b"
                     color="#f8fafc"
@@ -1237,10 +1263,11 @@ export default function SettingsPage() {
                 <Text color={MUTED} fontSize="$2xs" fontWeight="700">
                   PUBLIC KEY SYNC INTERVAL (MS):
                 </Text>
-                <Input bg={PANEL_ALT} borderColor="#334155" borderRadius="$md">
+                <Input bg={PANEL_ALT} borderColor="#334155" borderRadius="$md" isDisabled={!canUpdateAndroidConfig}>
                   <InputField
                     value={keySyncInput}
                     onChangeText={setKeySyncInput}
+                    editable={canUpdateAndroidConfig}
                     placeholder="15000 (auto-sets 15000 ms if empty or 0)"
                     placeholderTextColor="#64748b"
                     color="#f8fafc"
@@ -1295,6 +1322,7 @@ export default function SettingsPage() {
                 </Text>
 
                 {/* Root CA Actions */}
+                {canUpdateAndroidConfig ? (
                 <HStack space="xs">
                   <Button
                     flex={1}
@@ -1329,6 +1357,11 @@ export default function SettingsPage() {
                     </ButtonText>
                   </Button>
                 </HStack>
+                ) : (
+                  <Text color={MUTED} fontSize="$2xs" fontStyle="italic">
+                    Locked: requires &apos;android.config.update&apos; permission to modify Root CA.
+                  </Text>
+                )}
 
                 {/* Inline Root CA Camera Viewport */}
                 {caQrScannerVisible && (
@@ -1391,6 +1424,7 @@ export default function SettingsPage() {
               </Box>
 
               {/* Primary Action: Save Server Configuration */}
+              {canUpdateAndroidConfig ? (
               <Button
                 bg={YELLOW}
                 borderRadius="$md"
@@ -1431,6 +1465,19 @@ export default function SettingsPage() {
                   Save Server Configuration
                 </ButtonText>
               </Button>
+              ) : (
+                <Box
+                  bg="rgba(148, 163, 184, 0.08)"
+                  borderWidth={1}
+                  borderColor="#334155"
+                  borderRadius="$md"
+                  p="$3"
+                >
+                  <Text color={MUTED} fontSize="$2xs" textAlign="center">
+                    Server configuration is read-only (requires &apos;android.config.update&apos; permission).
+                  </Text>
+                </Box>
+              )}
             </Box>
           )}
 

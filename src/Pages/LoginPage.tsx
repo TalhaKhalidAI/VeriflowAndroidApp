@@ -233,16 +233,12 @@ export default function LoginPage() {
     try {
       const token = data.trim();
 
-      // Auto-detect if the operator scanned a Public Key QR directly
+      // Block manual public key QR import before login; keys must be fetched from the server
       if (isLikelyPublicKeyPayload(token)) {
-        const parsed = parsePublicKeyPayload(token, newKeyName);
-        setNewKeyPem(parsed.pem);
-        if (!newKeyName.trim() || parsed.detectedFormat === 'JSON Bundle') {
-          setNewKeyName(parsed.suggestedName);
-        }
-        setScannedKeyFormat(parsed.detectedFormat);
-        setAddKeyQrMode(false);
-        setAddKeyModalVisible(true);
+        const msg =
+          'Public key QR import is disabled before login. Use "Refetch Keys" under Configuration & Keystore Options to sync keys from the server.';
+        setErrorMessage(msg);
+        Alert.alert('Key Import Disabled', msg, [{ text: 'OK' }]);
         setIsVerifying(false);
         return;
       }
@@ -596,37 +592,13 @@ export default function LoginPage() {
     }
   };
 
-  const handleAddKeyQrScanned = async ({ data }: { data: string }) => {
-    if (addKeyScanLock) return;
-    setAddKeyScanLock(true);
-    try {
-      const parsed = parsePublicKeyPayload(data, newKeyName);
-      setNewKeyPem(parsed.pem);
-      if (!newKeyName.trim() || parsed.detectedFormat === 'JSON Bundle') {
-        setNewKeyName(parsed.suggestedName);
-      }
-      setScannedKeyFormat(parsed.detectedFormat);
-      setAddKeyQrMode(false);
-      setAddKeyModalVisible(true);
-    } catch (err: any) {
-      Alert.alert(
-        'Invalid Key QR',
-        err.message || 'Scanned QR is not a valid Public Key (JSON, Base64, or PEM).',
-        [
-          { text: 'Scan Again', onPress: () => setAddKeyScanLock(false) },
-          {
-            text: 'Cancel',
-            style: 'cancel',
-            onPress: () => {
-              setAddKeyScanLock(false);
-              setAddKeyQrMode(false);
-            },
-          },
-        ],
-      );
-      return;
-    }
+  const handleAddKeyQrScanned = async ({ data: _data }: { data: string }) => {
+    setAddKeyQrMode(false);
     setAddKeyScanLock(false);
+    const msg =
+      'Manual public key import / QR scan is disabled before login. Please use "Refetch Keys" to sync public keys from the server.';
+    setErrorMessage(msg);
+    Alert.alert('Key Import Disabled', msg);
   };
 
   const handleRootCaQrScanned = ({ data }: { data: string }) => {
@@ -800,46 +772,6 @@ export default function LoginPage() {
 
             {showConfigOptions && (
               <VStack space="xs" mt="$2" pt="$2" borderTopWidth={1} borderTopColor="#1e293b">
-                <HStack space="xs">
-                  <Button
-                    flex={1}
-                    size="xs"
-                    variant="outline"
-                    borderColor="#334155"
-                    bg={PANEL_ALT}
-                    h={38}
-                    onPress={() => setAddKeyModalVisible(true)}
-                  >
-                    <HStack space="xs" alignItems="center">
-                      <Key size={13} color={YELLOW} />
-                      <ButtonText color="#cbd5e1" fontSize="$2xs" fontWeight="700">
-                        Import Key
-                      </ButtonText>
-                    </HStack>
-                  </Button>
-
-                  <Button
-                    flex={1}
-                    size="xs"
-                    variant="outline"
-                    borderColor={addKeyQrMode ? YELLOW : '#334155'}
-                    bg={addKeyQrMode ? 'rgba(250, 204, 21, 0.18)' : PANEL_ALT}
-                    h={38}
-                    onPress={() => {
-                      setAddKeyScanLock(false);
-                      setErrorMessage(null);
-                      setAddKeyQrMode((prev: boolean) => !prev);
-                    }}
-                  >
-                    <HStack space="xs" alignItems="center">
-                      <QrCode size={13} color={addKeyQrMode ? YELLOW : MUTED} />
-                      <ButtonText color={addKeyQrMode ? YELLOW : '#cbd5e1'} fontSize="$2xs" fontWeight="700">
-                        {addKeyQrMode ? 'Cancel QR' : 'Scan Key QR'}
-                      </ButtonText>
-                    </HStack>
-                  </Button>
-                </HStack>
-
                 <HStack space="xs">
                   <Button
                     flex={1}
