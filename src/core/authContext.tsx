@@ -3,6 +3,7 @@ import { Alert, AppState, AppStateStatus, NativeModules, Platform } from 'react-
 import { useQuery } from '@tanstack/react-query';
 import {
   DatabaseSecurityError,
+  deleteAllSqliteData,
   getAppSetting,
   initDatabase,
   replaceInventoryRules,
@@ -132,8 +133,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [revocationSyncError, setRevocationSyncError] = useState<string | null>(null);
   const [keySyncIntervalMs, setKeySyncIntervalMsState] = useState<number>(DEFAULT_KEY_SYNC_INTERVAL_MS);
   const revocationLogoutInProgressRef = useRef<boolean>(false);
+  const handledWipeIdsRef = useRef<Set<number>>(new Set());
+  const sqliteWipePromiseRef = useRef<Promise<unknown> | null>(null);
 
   const logout = useCallback(async () => {
+    if (sqliteWipePromiseRef.current) {
+      await sqliteWipePromiseRef.current.catch(() => undefined);
+    }
     setSession(null);
     setMonotonicExpired(false);
     setRevocationSyncError(null);
@@ -370,6 +376,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (Array.isArray(data?.items) && data.items.length > 0) {
+        const wipeItem = data.items.find(item => {
+          const targetType = String(item.target_type || '').toLowerCase();
+          const targetId = String(item.target_id || '');
+          if (targetType !== 'sqlite_wipe' || !targetId) return false;
+          if (handledWipeIdsRef.current.has(item.id)) return false;
+          return (
+            (Boolean(sessionShiftId) && targetId === sessionShiftId) ||
+            (Boolean(sessionUserId) && targetId === sessionUserId)
+          );
+        });
+
+        if (wipeItem && !revocationLogoutInProgressRef.current && !sqliteWipePromiseRef.current) {
+          handledWipeIdsRef.current.add(wipeItem.id);
+          const wipePromise = deleteAllSqliteData();
+          sqliteWipePromiseRef.current = wipePromise;
+          try {
+            const wipeRes = await wipePromise;
+            Alert.alert(
+              'Local SQLite Data Cleared',
+              `Remote wipe completed: deleted ${wipeRes.deletedScans} scan(s), ${wipeRes.deletedRules} rule(s), and ${wipeRes.deletedKeys} key(s).`,
+            );
+          } finally {
+            sqliteWipePromiseRef.current = null;
+          }
+        }
+
         const candidateKeys = new Set(
           [
             sessionSigningKeyId,
@@ -443,134 +475,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return true;
     }
 
-    if (session.permissions?.[perm] === true) {
-      return true;
-    }
-
     if (perm === 'android.scans.create') {
-      if (session.permissions?.['android.scans.create'] === false) return false;
-      if (session.permissions?.['android.scans.create'] === true) return true;
-      return session.permissions?.['scans.create'] !== false;
+      return session.permissions?.['android.scans.create'] === true;
     }
 
-    const androidFallbackMap: Record<string, string[]> = {
-      'android.keys.view': ['keys.view'],
-      'android.keys.create': ['keys.create'],
-      'android.keys.update': ['keys.update'],
-      'android.keys.revoke': ['keys.revoke'],
-      'android.keys.delete': ['keys.delete', 'keys.revoke'],
-      'android.inventory_rules.view': ['inventory_rules.view', 'inventory_rules'],
-      'android.inventory_rules.create': ['inventory_rules.create', 'inventory_rules'],
-      'android.inventory_rules.update': ['inventory_rules.update', 'inventory_rules'],
-      'android.inventory_rules.delete': ['inventory_rules.delete', 'inventory_rules'],
-      'android.scans.view.any': ['scans.view.any'],
-      'android.scans.view.own': ['scans.view.own', 'scans.view', 'scans.view.any'],
-      'android.scans.update': ['scans.update'],
-      'android.scans.delete': ['scans.delete'],
-    };
-
-    if (perm in androidFallbackMap) {
-      if (session.permissions?.[perm] === false) return false;
-      if (
-        perm === 'android.scans.view.own' &&
+    if (perm === 'android.scans.view.own') {
+      if (session.permissions?.['android.scans.view.own'] === false) return false;
+      return (
+        session.permissions?.['android.scans.view.own'] === true ||
         session.permissions?.['android.scans.view.any'] === true
-      ) {
-        return true;
-      }
-      return androidFallbackMap[perm].some(
-        fallback => session.permissions?.[fallback] === true,
       );
     }
 
-    if (perm === 'scans.create') {
-      if (session.permissions?.['android.scans.create'] === false) return false;
-      return session.permissions?.['scans.create'] !== false;
+    if (perm === 'android.inventory_rules.view') {
+      return session.permissions?.['android.inventory_rules.view'] !== false;
     }
 
-    if (perm === 'scans.view' || perm === 'scans.view.own') {
-      return (
-        session.permissions?.['scans.view.own'] === true ||
-        session.permissions?.['scans.view'] === true ||
-        session.permissions?.['scans.view.any'] === true
-      );
-    }
-
-    if (perm === 'scans.view.any') {
-      return session.permissions?.['scans.view.any'] === true || session.role === 'admin';
-    }
-
-    if (perm === 'scans.update') {
-      return session.permissions?.['scans.update'] === true;
-    }
-
-    if (perm === 'scans.delete') {
-      return session.permissions?.['scans.delete'] === true;
-    }
-
-    if (perm === 'inventory_rules.view') {
-      return (
-        session.permissions?.['inventory_rules.view'] === true ||
-        session.permissions?.['inventory_rules'] === true
-      );
-    }
-
-    if (perm === 'inventory_rules.create') {
-      return (
-        session.permissions?.['inventory_rules.create'] === true ||
-        session.permissions?.['inventory_rules'] === true
-      );
-    }
-
-    if (perm === 'inventory_rules.update') {
-      return (
-        session.permissions?.['inventory_rules.update'] === true ||
-        session.permissions?.['inventory_rules'] === true
-      );
-    }
-
-    if (perm === 'inventory_rules.delete') {
-      return (
-        session.permissions?.['inventory_rules.delete'] === true ||
-        session.permissions?.['inventory_rules'] === true
-      );
-    }
-
-    if (perm === 'keys.view') {
-      return (
-        session.permissions?.['keys.view'] === true ||
-        session.permissions?.['keys'] === true
-      );
-    }
-
-    if (perm === 'keys.create') {
-      return (
-        session.permissions?.['keys.create'] === true ||
-        session.permissions?.['keys'] === true
-      );
-    }
-
-    if (perm === 'keys.update') {
-      return (
-        session.permissions?.['keys.update'] === true ||
-        session.permissions?.['keys'] === true
-      );
-    }
-
-    if (perm === 'keys.delete' || perm === 'keys.revoke') {
-      return (
-        session.permissions?.['keys.delete'] === true ||
-        session.permissions?.['keys.revoke'] === true
-      );
-    }
-
-    if (perm === 'user.delete_all_data' || perm === 'delete_all_data') {
-      return (
-        session.permissions?.['user.delete_all_data'] === true ||
-        session.permissions?.['delete_all_data'] === true
-      );
-    }
-
-    return false;
+    return session.permissions?.[perm] === true;
   };
 
   const login = async (token: string, payload: any, publicKeyId?: number) => {
@@ -578,13 +499,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ? { ...payload.permissions }
       : {};
 
-    if (perms['scans.view.own'] === undefined) perms['scans.view.own'] = true;
-    if (perms['scans.create'] === undefined) perms['scans.create'] = true;
-    if (perms['android.scans.create'] === undefined) perms['android.scans.create'] = true;
-    if (perms['inventory_rules.view'] === undefined) perms['inventory_rules.view'] = true;
+    if (perms['android.scans.view.own'] === undefined) perms['android.scans.view.own'] = true;
+    if (perms['android.inventory_rules.view'] === undefined) perms['android.inventory_rules.view'] = true;
 
     const canOverrideRules = Boolean(
-      perms['rules.override'] ||
+      perms['android.rules.override'] ||
       payload.role === 'admin' ||
       payload.allow_rule_override === true
     );
@@ -900,7 +819,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ? Boolean((session as any).strict_rules)
       : (session as any).allow_rule_override !== undefined
       ? !(session as any).allow_rule_override
-      : !session.permissions?.['rules.override'] && session.role !== 'admin')
+      : !session.permissions?.['android.rules.override'] && session.role !== 'admin')
   );
   const canOverrideRules = !isStrictRules;
 
@@ -910,7 +829,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ? Boolean((session as any).strict_key)
       : (session as any).allow_key_override !== undefined
       ? !(session as any).allow_key_override
-      : !session.permissions?.['keys.override'] && session.role !== 'admin')
+      : !session.permissions?.['android.keys.override'] && session.role !== 'admin')
   );
   const strictKeyId = isStrictKey
     ? ((session as any)?.strict_key_id || session?.keyId)

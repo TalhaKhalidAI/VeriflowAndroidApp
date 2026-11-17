@@ -181,7 +181,7 @@ export default function HomePage() {
             <Text color={MUTED} fontSize="$2xs" mt="$1">
               {isShiftExpired
                 ? 'Your shift token has expired. Scanning new items is forbidden. Please complete Checkout below.'
-                : 'Your shift token lacks "scans.create" permission.'}
+                : 'Your account lacks "android.scans.create" permission.'}
             </Text>
           </Box>
         )}

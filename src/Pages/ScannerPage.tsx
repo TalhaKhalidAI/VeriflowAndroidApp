@@ -421,7 +421,7 @@ export default function ScannerPage() {
         <Text color={MUTED} textAlign="center" mt="$2" maxWidth={360}>
           Your shift token does not have the required{' '}
           <Text color={YELLOW} fontWeight="700">
-            scans.create
+            android.scans.create
           </Text>{' '}
           permission to operate the barcode scanner.
         </Text>

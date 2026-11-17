@@ -105,10 +105,10 @@ export default function SettingsPage() {
   const canViewKeys = hasPermission('android.keys.view');
   const canCreateKeys = hasPermission('android.keys.create');
   const canUpdateKeys = hasPermission('android.keys.update');
-  const canDeleteKeys =
-    hasPermission('android.keys.delete') || hasPermission('android.keys.revoke');
+  const canRevokeKeys = hasPermission('android.keys.revoke');
+  const canDeleteKeys = hasPermission('android.keys.delete');
   const canUpdateAndroidConfig = hasPermission('android.config.update');
-  const canDeleteAllData = hasPermission('user.delete_all_data');
+  const canDeleteAllData = hasPermission('android.data.delete_all');
 
   // Public Keys state
   const [publicKeys, setPublicKeys] = useState<PublicKeyRecord[]>([]);
@@ -309,6 +309,73 @@ export default function SettingsPage() {
     } catch (err: any) {
       Alert.alert('Invalid PEM', err.message || 'Key parsing failed');
     }
+  };
+
+  const confirmRevokeKey = (item: PublicKeyRecord) => {
+    if (isStrictKey && (String(item.id) === String(strictKeyId) || item.name.includes(String(strictKeyId)))) {
+      Alert.alert('Policy Enforced', 'Cannot revoke the cryptographic verification key assigned to your active shift.');
+      return;
+    }
+    if (!canRevokeKeys) {
+      Alert.alert('Permission Denied', 'Your account lacks "android.keys.revoke" permission.');
+      return;
+    }
+    if (!session?.token) {
+      Alert.alert('Not Authenticated', 'Active session token required to revoke a key on the server.');
+      return;
+    }
+    Alert.alert(
+      'Revoke Key on Server & Device?',
+      `This will attempt to revoke "${item.name}" on the server (if online) and remove it from this device.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Revoke',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const jwksRes = await apiFetch(apiBaseUrl, '/keys/jwks', {
+                headers: { Accept: 'application/json' },
+              }).catch(() => null);
+              if (!jwksRes || !jwksRes.ok) {
+                Alert.alert('Network Required', 'Cannot reach server to revoke this key. Connect to the network and try again.');
+                return;
+              }
+              const jwksData = await jwksRes.json();
+              const serverKeys: any[] = Array.isArray(jwksData?.keys) ? jwksData.keys : [];
+              const norm = (s: string) => s.replace(/\s+/g, '');
+              const matched = serverKeys.find(
+                (sk) =>
+                  (sk.kid && (item.name === sk.kid || item.name.includes(sk.kid))) ||
+                  (sk.public_key && norm(sk.public_key) === norm(item.public_key_string)),
+              );
+              if (!matched?.id) {
+                Alert.alert('Key Not Found on Server', `"${item.name}" was not matched to an active server key.`);
+                return;
+              }
+              const revokeRes = await apiFetch(apiBaseUrl, `/keys/${matched.id}/revoke`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${session.token}`,
+                },
+                body: JSON.stringify({ reason: 'Revoked from Android mobile app' }),
+              });
+              if (!revokeRes.ok) {
+                const errBody = await revokeRes.json().catch(() => ({}));
+                Alert.alert('Revoke Failed', String(errBody?.detail || `Server returned HTTP ${revokeRes.status}`));
+                return;
+              }
+              await deletePublicKey(item.id);
+              await refresh();
+              Alert.alert('Key Revoked', `"${item.name}" has been revoked on the server and removed locally.`);
+            } catch (e: any) {
+              Alert.alert('Revoke Error', e?.message || 'Failed to revoke key.');
+            }
+          },
+        },
+      ],
+    );
   };
 
   const confirmDeleteKey = (item: PublicKeyRecord) => {
@@ -1088,6 +1155,12 @@ export default function SettingsPage() {
                               </Pressable>
                             ) : null}
 
+                            {canRevokeKeys ? (
+                              <Pressable onPress={() => confirmRevokeKey(k)} style={styles.actionBtn}>
+                                <ShieldAlert size={15} color="#f97316" />
+                              </Pressable>
+                            ) : null}
+
                             {canDeleteKeys ? (
                               <Pressable onPress={() => confirmDeleteKey(k)} style={styles.actionBtn}>
                                 <Trash2 size={15} color={FAIL_COLOR} />
@@ -1538,7 +1611,7 @@ export default function SettingsPage() {
                 <HStack space="xs" alignItems="center" flex={1}>
                   <Lock size={13} color={MUTED} />
                   <Text color={MUTED} fontSize="$2xs">
-                    Requires &quot;user.delete_all_data&quot; permission.
+                    Requires &quot;android.data.delete_all&quot; permission.
                   </Text>
                 </HStack>
                 <Button
